@@ -1,0 +1,12 @@
+# Skipped symbols - 20250710_030137
+# Total: 10
+AAPL
+AMD
+AVGO
+GOOGL
+T
+AMZN
+BAC
+CAT
+BA
+CVX

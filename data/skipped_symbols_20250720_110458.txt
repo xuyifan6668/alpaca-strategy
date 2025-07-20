@@ -1,0 +1,11 @@
+# Skipped symbols - 20250720_110458
+# Total: 9
+TSLA
+NVDA
+AMZN
+AAPL
+MSFT
+META
+GME
+AMC
+PLTR
