@@ -111,8 +111,10 @@ class AllSymbolsDataModule(pl.LightningDataModule):
         
         self.scalers = {}
         for s, df in self.stock_dfs.items():
-            self.stock_dfs[s] = add_minute_norm(df)
-            train_data = df.iloc[: last_train_row + 1][ALL_COLS].values
+            # Add minute_norm first, then access ALL_COLS
+            df_with_norm = add_minute_norm(df)
+            self.stock_dfs[s] = df_with_norm
+            train_data = df_with_norm.iloc[: last_train_row + 1][ALL_COLS].values
             scaler = StandardScaler().fit(train_data)
             self.scalers[s] = scaler
         
@@ -126,8 +128,8 @@ class AllSymbolsDataModule(pl.LightningDataModule):
     # ----------------------------- loaders ----------------------------------
     def _dl(self, ds, shuffle):
         return DataLoader(ds, batch_size=cfg.batch_size, shuffle=shuffle,
-                          num_workers=cfg.num_workers, pin_memory=True)
-                        #   persistent_workers=True)
+                          num_workers=cfg.num_workers, pin_memory=True,
+                          persistent_workers=True if cfg.num_workers > 0 else False)
 
     def train_dataloader(self):
         return self._dl(self.train_ds, True)

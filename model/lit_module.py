@@ -17,7 +17,7 @@ from utils.config import cfg
 # ---------------------------------------------------------------------------
 
 class Lit(pl.LightningModule):
-    def __init__(self, *, encoder: Encoder | None = None, cfg=cfg, base_lr: float = 1e-3):
+    def __init__(self, *, encoder: Encoder | None = None, cfg=cfg, base_lr: float = 1e-3, scalers=None):
         """Lightning module wrapping an **Encoder**.
 
         Parameters
@@ -30,11 +30,14 @@ class Lit(pl.LightningModule):
             Defaults to the project-wide global.
         base_lr : float, default 1e-3
             Base learning rate for the AdamW optimiser.
+        scalers : dict, optional
+            Dictionary of scalers for each symbol. Will be saved with the model.
         """
         super().__init__()
 
         self.cfg = cfg
         self.base_lr = base_lr
+        self.scalers = scalers
 
         # Save only primitive hyper-parameters so checkpoints stay lightweight
         self.save_hyperparameters({"base_lr": base_lr})

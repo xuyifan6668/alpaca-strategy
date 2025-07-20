@@ -26,7 +26,7 @@ from model.lit_module import Lit
 
 def parse_args():
     p = argparse.ArgumentParser(description="Micro-graph training / predict")
-    p.add_argument("mode", choices=["train", "predict"], help="run mode")
+    p.add_argument("mode", choices=["train", "predict", "list"], help="run mode")
     p.add_argument("--ckpt", default="last.ckpt", help="checkpoint path")
     p.add_argument("--out", default="preds.npy", help="prediction output file")
     return p.parse_args()
@@ -42,8 +42,19 @@ def main():
     dm.setup("fit")
 
     if args.mode == "train":
-        model = Lit()
-        logger = WandbLogger(project="micro-graph-v0") if cfg.log_wandb else None
+        # Get scalers from data module
+        scalers = getattr(dm, 'scalers', None)
+        model = Lit(scalers=scalers)
+        
+        # Configure wandb logger with checkpoint logging
+        if cfg.log_wandb:
+            logger = WandbLogger(
+                project="micro-graph-v2",
+                log_model=True,  # Automatically log checkpoints to wandb
+                save_dir="results"  # Save checkpoints locally as well
+            )
+        else:
+            logger = None
         trainer = pl.Trainer(
             max_epochs=cfg.epochs,
             accelerator="gpu" if torch.cuda.is_available() else "cpu",
@@ -58,18 +69,8 @@ def main():
         )
         trainer.fit(model, dm)
         trainer.test(model, dm)
-        # Attach the scalers to the checkpoint dict directly, not as a model attribute
-        scalers = getattr(dm, 'scalers', None)
-        
-        # Save to results folder
-        import os
-        os.makedirs('results', exist_ok=True)
-        checkpoint_path = os.path.join('results', args.ckpt)
-        torch.save({
-            'state_dict': model.state_dict(),
-            'scalers': scalers
-        }, checkpoint_path)
-        print(f"Model saved to: {checkpoint_path}")
+        print("Training completed. Model and scalers saved automatically by PyTorch Lightning.")
+        print("Check wandb for the complete checkpoint with integrated scalers.")
     else:
         ckpt_path = pathlib.Path(args.ckpt)
         if not ckpt_path.exists():

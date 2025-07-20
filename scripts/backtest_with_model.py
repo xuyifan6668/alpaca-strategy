@@ -26,18 +26,28 @@ class ModelWrapper:
 
     def __init__(self, checkpoint_path: str, device: str = "cpu") -> None:
         self.device = torch.device(device)
-        ckpt = torch.load(checkpoint_path, map_location=self.device)
-
-        if isinstance(ckpt, dict) and "state_dict" in ckpt:
-            lit = Lit()
-            lit.load_state_dict(ckpt["state_dict"], strict=False)
+        
+        # Try to load as integrated PyTorch Lightning model first
+        try:
+            lit = Lit.load_from_checkpoint(checkpoint_path, map_location=self.device)
             self.model = lit.net
-            self.scalers = ckpt.get("scalers", None)
-        elif hasattr(ckpt, "net"):
-            self.model = ckpt.net
-            self.scalers = getattr(ckpt, "scalers", None)
-        else:
-            raise RuntimeError("Unsupported checkpoint format; expected dict with 'state_dict' or object with .net")
+            self.scalers = lit.scalers
+            print(f"Loaded integrated model with {len(self.scalers) if self.scalers else 0} scalers")
+        except Exception as e:
+            print(f"Could not load as integrated model: {e}")
+            # Fallback to manual loading
+            ckpt = torch.load(checkpoint_path, map_location=self.device)
+
+            if isinstance(ckpt, dict) and "state_dict" in ckpt:
+                lit = Lit()
+                lit.load_state_dict(ckpt["state_dict"], strict=False)
+                self.model = lit.net
+                self.scalers = ckpt.get("scalers", None)
+            elif hasattr(ckpt, "net"):
+                self.model = ckpt.net
+                self.scalers = getattr(ckpt, "scalers", None)
+            else:
+                raise RuntimeError("Unsupported checkpoint format; expected dict with 'state_dict' or object with .net")
 
         if self.scalers is None:
             raise RuntimeError("No scalers found in checkpoint. Please retrain and save with scalers.")

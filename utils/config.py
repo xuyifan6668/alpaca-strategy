@@ -27,7 +27,7 @@ class Config:
     test_ratio: float = 0.1
 
     # System
-    num_workers: int = 0
+    num_workers: int = 8  # Increased for better performance
     log_wandb: bool = True
 
     # Universe size (update if list changes below)
