@@ -6,7 +6,7 @@ import os
 
 
 def save_stream_status(stream_start_time, last_trade_time, total_trades_received, 
-                      trade_counter, symbols, save_dir="logs"):
+                      trade_counter, symbols, save_dir="results/logs"):
     """Save current stream status to local file."""
     os.makedirs(save_dir, exist_ok=True)
     
@@ -74,7 +74,7 @@ def show_stream_status(stream_start_time, last_trade_time, total_trades_received
         print(f"Status save error: {e}")
 
 
-def save_trade_activity(symbol, price, size, timestamp, save_dir="logs"):
+def save_trade_activity(symbol, price, size, timestamp, save_dir="results/logs"):
     """Save individual trade activity to CSV file."""
     os.makedirs(save_dir, exist_ok=True)
     

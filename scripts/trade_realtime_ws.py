@@ -1,11 +1,17 @@
 from __future__ import annotations
 import asyncio
+import sys
+import os
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 import json
 import websockets
 import threading
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 import numpy as np
 import pandas as pd
@@ -30,7 +36,7 @@ from utils.trading import nyc_now, get_account_balance, smart_position_managemen
 PAPER = True
 SYMBOLS: List[str] = tickers
 SEQ_LEN = cfg.seq_len
-CHECKPOINT_PATH = "last.ckpt"
+CHECKPOINT_PATH = "results/last.ckpt"
 TOP_K = 3
 MIN_PROB = 0.01
 HOLD_MINUTES = 10

@@ -1,4 +1,10 @@
 import pathlib
+import sys
+import os
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 import backtrader as bt
 import pandas as pd
@@ -9,7 +15,7 @@ import quantstats as qs
 from model.lit_module import Lit
 from utils.config import ALL_COLS, cfg, tickers
 
-CHECKPOINT_PATH = "last.ckpt"  
+CHECKPOINT_PATH = "results/last.ckpt"  
 
 
 class ModelWrapper:
@@ -233,7 +239,7 @@ class TopKStrategy(bt.Strategy):
             open_positions.append(sym)
 
 
-def load_all_parquet_feeds(data_dir: str = "data_micro_url") -> list[bt.feeds.PandasData]:
+def load_all_parquet_feeds(data_dir: str = "data") -> list[bt.feeds.PandasData]:
 
 
     raw: dict[str, pd.DataFrame] = {}
@@ -252,7 +258,7 @@ def load_all_parquet_feeds(data_dir: str = "data_micro_url") -> list[bt.feeds.Pa
         df = pd.read_parquet(p, engine="pyarrow")
         df["datetime"] = pd.to_datetime(df["timestamp"])
         df.set_index("datetime", inplace=True)
-        raw[sym] = df.drop(columns=["timestamp"])
+        raw[sym] = df
 
     if not raw:
         raise FileNotFoundError(f"No valid symbols found in {data_dir}")
@@ -293,9 +299,7 @@ def load_all_parquet_feeds(data_dir: str = "data_micro_url") -> list[bt.feeds.Pa
     feeds: list[bt.feeds.PandasData] = []
     
     for sym, filled_df in aligned_dict.items(): # Changed to aligned_dict
-        # Set datetime index for Backtrader
-        filled_df = filled_df.set_index('timestamp')
-        
+        # Dataframe already has datetime index from earlier processing
         nan_count = filled_df.isna().sum().sum()
         
 
@@ -319,7 +323,7 @@ def run_backtest(strategy_name: str = "topk", **strategy_params):
     import os
     if not os.path.exists(CHECKPOINT_PATH):
         print(f"Checkpoint not found: {CHECKPOINT_PATH}")
-        print("   Please train the model first by running: python pipeline.py")
+        print("   Please train the model first by running: python scripts/train.py train")
         return None
     
     # Strategy selection
@@ -390,7 +394,10 @@ def run_backtest(strategy_name: str = "topk", **strategy_params):
             pf = strat.analyzers.pyfolio.get_pf_items()
             returns = pf[0] 
             returns.index = returns.index.tz_localize(None)
-            report_path = "backtest_report_slot6.html"
+            
+            
+            os.makedirs('results', exist_ok=True)
+            report_path = os.path.join('results', "backtest_report.html")
             qs.reports.html(returns, output=report_path, title="Top-K Equal-Weight Strategy")
             print(f"Report: {report_path}")
         except Exception as e:

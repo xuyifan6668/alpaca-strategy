@@ -1,5 +1,12 @@
 from datetime import datetime
+import sys
+import os
 from tqdm import tqdm
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
 from utils.data_utils import smart_fill_features, align_to_nyse_timeline, floor_minute, trades_to_min, fetch_pages, setup_config
 from utils.config import tickers
 
@@ -118,7 +125,7 @@ def main():
     symbols = tickers
     # symbols = ["AAPL", "TSLA", "MSFT"]  # For testing with fewer symbols
     
-    # symbols = load_failed_symbols("data_micro_url/error_symbols_20250115_143022.txt")
+    # symbols = load_failed_symbols("data/error_symbols_20250115_143022.txt")
     
 
     

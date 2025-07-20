@@ -13,7 +13,7 @@ def nyc_now() -> datetime:
     return datetime.now(pytz.timezone("America/New_York")).replace(tzinfo=None)
 
 
-def save_position_change(action, symbol, qty, price=None, reason="", save_dir="logs"):
+def save_position_change(action, symbol, qty, price=None, reason="", save_dir="results/logs"):
     """Save position changes to local file."""
     os.makedirs(save_dir, exist_ok=True)
     
@@ -40,7 +40,7 @@ def save_position_change(action, symbol, qty, price=None, reason="", save_dir="l
         ])
 
 
-def save_trading_summary(positions, save_dir="logs"):
+def save_trading_summary(positions, save_dir="results/logs"):
     """Save current trading summary to JSON file."""
     os.makedirs(save_dir, exist_ok=True)
     
@@ -78,7 +78,7 @@ def save_trading_summary(positions, save_dir="logs"):
     return summary_file
 
 
-def save_order_log(symbol, side, qty, order_type="MARKET", reason="", save_dir="logs"):
+def save_order_log(symbol, side, qty, order_type="MARKET", reason="", save_dir="results/logs"):
     """Save order submission to log file."""
     os.makedirs(save_dir, exist_ok=True)
     

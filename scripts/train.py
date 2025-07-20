@@ -8,9 +8,15 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import sys
+import os
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import torch
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 from utils.config import cfg
 from utils.data_module import AllSymbolsDataModule
@@ -54,10 +60,16 @@ def main():
         trainer.test(model, dm)
         # Attach the scaler to the checkpoint dict directly, not as a model attribute
         scaler = getattr(dm, 'global_scaler', None)
+        
+        # Save to results folder
+        import os
+        os.makedirs('results', exist_ok=True)
+        checkpoint_path = os.path.join('results', args.ckpt)
         torch.save({
             'state_dict': model.state_dict(),
             'scaler': scaler
-        }, args.ckpt)
+        }, checkpoint_path)
+        print(f"Model saved to: {checkpoint_path}")
     else:
         ckpt_path = pathlib.Path(args.ckpt)
         if not ckpt_path.exists():
