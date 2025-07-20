@@ -144,6 +144,12 @@ def build_window_df(sym: str) -> pd.DataFrame:
         return pd.DataFrame()
     df = smart_fill_features(pd.DataFrame(list(BAR_BUFFERS[sym]))).tail(SEQ_LEN)
     df = add_minute_norm(df)
+    
+    # Ensure all required columns are present
+    for col in ALL_COLS:
+        if col not in df.columns:
+            df[col] = 0.0
+    
     return df
 
 

@@ -58,8 +58,8 @@ def main():
         )
         trainer.fit(model, dm)
         trainer.test(model, dm)
-        # Attach the scaler to the checkpoint dict directly, not as a model attribute
-        scaler = getattr(dm, 'global_scaler', None)
+        # Attach the scalers to the checkpoint dict directly, not as a model attribute
+        scalers = getattr(dm, 'scalers', None)
         
         # Save to results folder
         import os
@@ -67,7 +67,7 @@ def main():
         checkpoint_path = os.path.join('results', args.ckpt)
         torch.save({
             'state_dict': model.state_dict(),
-            'scaler': scaler
+            'scalers': scalers
         }, checkpoint_path)
         print(f"Model saved to: {checkpoint_path}")
     else:

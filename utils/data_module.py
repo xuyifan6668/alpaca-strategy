@@ -108,12 +108,15 @@ class AllSymbolsDataModule(pl.LightningDataModule):
         te_idx = list(range(nw - n_test, nw))
 
         last_train_row = tr_idx[-1] + cfg.seq_len + cfg.horizon - 1
+        
+        self.scalers = {}
         for s, df in self.stock_dfs.items():
             self.stock_dfs[s] = add_minute_norm(df)
-        all_rows = [df.iloc[: last_train_row + 1][ALL_COLS].values for df in self.stock_dfs.values()]
-        global_scaler = StandardScaler().fit(np.vstack(all_rows))
-        self.scalers = {s: global_scaler for s in self.stock_dfs}
-        self.global_scaler = global_scaler
+            train_data = df.iloc[: last_train_row + 1][ALL_COLS].values
+            scaler = StandardScaler().fit(train_data)
+            self.scalers[s] = scaler
+        
+        self.global_scaler = next(iter(self.scalers.values()))
 
         full_ds = WindowDataset(self.stock_dfs, self.scalers, label_generator=DEFAULT_LABEL_GEN)
         self.train_ds = Subset(full_ds, tr_idx)
@@ -140,6 +143,8 @@ class AllSymbolsDataModule(pl.LightningDataModule):
     # ------------------------------------------------------------------
 
     def get_scaler(self, sym: str) -> StandardScaler:
-        """Return the fitted (global) scaler for *sym* after setup()."""
+        """Return the fitted scaler for *sym* after setup()."""
         assert self.scalers is not None, "setup() must be called first"
+        if sym not in self.scalers:
+            raise KeyError(f"Scaler for symbol '{sym}' not found. Available symbols: {list(self.scalers.keys())}")
         return self.scalers[sym] 

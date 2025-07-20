@@ -32,12 +32,15 @@ class ModelWrapper:
             lit = Lit()
             lit.load_state_dict(ckpt["state_dict"], strict=False)
             self.model = lit.net
-            self.scaler = ckpt.get("scaler", None)
+            self.scalers = ckpt.get("scalers", None)
         elif hasattr(ckpt, "net"):
             self.model = ckpt.net
-            self.scaler = getattr(ckpt, "scaler", None)
+            self.scalers = getattr(ckpt, "scalers", None)
         else:
             raise RuntimeError("Unsupported checkpoint format; expected dict with 'state_dict' or object with .net")
+
+        if self.scalers is None:
+            raise RuntimeError("No scalers found in checkpoint. Please retrain and save with scalers.")
 
         self.model.eval()
         self.model.to(self.device)
@@ -63,7 +66,7 @@ class ModelWrapper:
         return next(iter(self.predict_batch({"_single": df}).values()))
 
     # ------------------------------------------------------------------
-    def _prepare_window(self, df: pd.DataFrame) -> np.ndarray:
+    def _prepare_window(self, df: pd.DataFrame, symbol: str = "default") -> np.ndarray:
         """Convert raw window *df* → numpy array (seq_len, FEAT_DIM)."""
         if "timestamp" not in df.columns:
             df = df.copy()
@@ -72,10 +75,10 @@ class ModelWrapper:
         df = self._add_minute_norm(df)
         df = self._ensure_cols(df)
 
-        # Use the loaded scaler for transformation
-        if self.scaler is None:
-            raise RuntimeError("Scaler not found in checkpoint. Please retrain and save with scaler.")
-        feat_scaled = self.scaler.transform(df[ALL_COLS].values)
+        if symbol not in self.scalers:
+            raise RuntimeError(f"Scaler for symbol '{symbol}' not found in checkpoint. Available symbols: {list(self.scalers.keys())}")
+        scaler = self.scalers[symbol]
+        feat_scaled = scaler.transform(df[ALL_COLS].values)
 
         return feat_scaled.astype(np.float32)  # (T, FEAT_DIM)
 
@@ -93,7 +96,7 @@ class ModelWrapper:
             Symbol → {"reg_pred": float, "cls_prob": float, "direction": bool}
         """
         order = list(win_dict.keys())
-        feats = [self._prepare_window(win_dict[sym]) for sym in order]
+        feats = [self._prepare_window(win_dict[sym], sym) for sym in order]
 
         x = torch.tensor(np.stack(feats), dtype=torch.float32).unsqueeze(0).to(self.device)  # (1,S,T,D)
 
@@ -125,7 +128,6 @@ class TopKStrategy(bt.Strategy):
         decision_interval=10,     # check buys every 10 bars
         hold_period=10,           # sell after 10 bars automatically
         max_positions=6,
-        # min_trade_shares=5,
     )
 
     def __init__(self):
