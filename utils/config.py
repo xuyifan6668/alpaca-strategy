@@ -27,7 +27,7 @@ class Config:
     test_ratio: float = 0.1
 
     # System
-    num_workers: int = 0  # Set to 0 for Windows compatibility (multiprocessing issues)
+    num_workers: int = 6  # Windows-compatible multiprocessing (2-4 workers max)
     log_wandb: bool = True
 
     # Universe size (update if list changes below)

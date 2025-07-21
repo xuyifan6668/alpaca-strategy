@@ -33,6 +33,10 @@ def parse_args():
 
 
 def main():
+    # Enable Tensor Core optimization for better performance on NVIDIA GPUs
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision('medium')
+    
     pl.seed_everything(42, workers=True)
 
     args = parse_args()
