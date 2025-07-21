@@ -109,7 +109,6 @@ class AllSymbolsDataModule(pl.LightningDataModule):
 
         last_train_row = tr_idx[-1] + cfg.seq_len + cfg.horizon - 1
         
-        self.scalers = {}
         for s, df in self.stock_dfs.items():
             # Add minute_norm first, then access ALL_COLS
             df_with_norm = add_minute_norm(df)

@@ -43,6 +43,10 @@ class Lit(pl.LightningModule):
         self.save_hyperparameters({"base_lr": base_lr})
 
         self.net = encoder if encoder is not None else Encoder(cfg=cfg)
+        
+        # Store scalers for checkpoint saving
+        if scalers is not None:
+            self._scalers = scalers  # Store actual scalers
 
     # ----------------- Optimiser & Scheduler ------------------------------
     def configure_optimizers(self):
@@ -103,4 +107,29 @@ class Lit(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         X, _ = batch
-        return torch.sigmoid(self.net(X)).cpu().numpy() 
+        return torch.sigmoid(self.net(X)).cpu().numpy()
+    
+    def on_save_checkpoint(self, checkpoint):
+        """Save scalers in the checkpoint."""
+        if hasattr(self, '_scalers') and self._scalers is not None:
+            checkpoint['scalers'] = self._scalers
+            print(f"Saved {len(self._scalers)} scalers in checkpoint")
+    
+    def on_load_checkpoint(self, checkpoint):
+        """Load scalers from the checkpoint."""
+        if 'scalers' in checkpoint:
+            self._scalers = checkpoint['scalers']
+            self.scalers = self._scalers  # For backward compatibility
+            print(f"Loaded {len(self._scalers)} scalers from checkpoint")
+        else:
+            print("No scalers found in checkpoint")
+    
+    @property
+    def scalers(self):
+        """Property to access scalers."""
+        return getattr(self, '_scalers', None)
+    
+    @scalers.setter
+    def scalers(self, value):
+        """Property setter for scalers."""
+        self._scalers = value 

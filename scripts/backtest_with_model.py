@@ -15,7 +15,7 @@ import quantstats as qs
 from model.lit_module import Lit
 from utils.config import ALL_COLS, cfg, tickers
 
-CHECKPOINT_PATH = "results/last.ckpt"  
+CHECKPOINT_PATH = "results/micro-graph-v2/0ijfkyhi/checkpoints/best-epochepoch=2-valval_loss=2.0341.ckpt"  
 
 
 class ModelWrapper:
