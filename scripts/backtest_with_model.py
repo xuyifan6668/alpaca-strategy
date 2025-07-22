@@ -17,7 +17,7 @@ import quantstats as qs
 from model.lit_module import Lit
 from utils.config import ALL_COLS, cfg, tickers
 
-CHECKPOINT_PATH = "results/micro-graph-v2/2nq20hxu/checkpoints/epoch-epoch=0.ckpt"
+CHECKPOINT_PATH = "results/micro-graph-v2/rb2pidc4/checkpoints/epoch-epoch=0.ckpt"
 
 
 class ModelWrapper:
@@ -500,8 +500,8 @@ def run_backtest(strategy_name: str = "topk", **strategy_params):
 
 
             os.makedirs('results', exist_ok=True)
-            report_path = os.path.join('results', "backtest_report_latest.html")
-            returns.to_csv(os.path.join('results', "backtest_report_latest.csv"))
+            report_path = os.path.join('results', "backtest_report_binary.html")
+            returns.to_csv(os.path.join('results', "backtest_report_binary.csv"))
             qs.reports.html(returns, output=report_path, title="Top-K Equal-Weight Strategy")
             print(f"Report: {report_path}")
         except Exception as e:
@@ -518,6 +518,6 @@ def run_backtest(strategy_name: str = "topk", **strategy_params):
 
 if __name__ == "__main__":
 
-    run_backtest("topk", top_k=3, min_prob_threshold=0.5)
+    run_backtest("topk", top_k=3, min_prob_threshold=0.01)
 
 

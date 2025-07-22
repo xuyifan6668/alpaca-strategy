@@ -17,7 +17,7 @@ from utils.config import cfg
 # ---------------------------------------------------------------------------
 
 class Lit(pl.LightningModule):
-    def __init__(self, *, encoder: Encoder | None = None, cfg=cfg, base_lr: float = 1e-3, scalers=None):
+    def __init__(self, *, encoder: Encoder | None = None, cfg=cfg, base_lr: float = 5e-4, scalers=None):
         """Lightning module wrapping an **Encoder**.
 
         Parameters
@@ -56,19 +56,19 @@ class Lit(pl.LightningModule):
 
         total_steps = int(self.trainer.estimated_stepping_batches)  # type: ignore[attr-defined]
 
-        oc_scheduler = OneCycleLR(
+        scheduler = OneCycleLR(
             opt,
             max_lr=self.base_lr * 3,  # peak LR = 3× base
             total_steps=total_steps,
-            pct_start=0.05,
+            pct_start=0.1,  # ramp up for 10% of steps
             anneal_strategy="cos",
-            final_div_factor=1e4,
+            final_div_factor=100,  # final LR = 1.5e-5
         )
 
         return {
             "optimizer": opt,
             "lr_scheduler": {
-                "scheduler": oc_scheduler,
+                "scheduler": scheduler,
                 "interval": "step", 
             },
         }

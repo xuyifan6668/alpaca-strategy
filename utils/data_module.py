@@ -44,6 +44,13 @@ class WindowDataset(Dataset):
         ], axis=0)
         arr_labels = self.label_generator(close_matrix, self.seq_len, self.horizon)  # shape (nw, S)
 
+        positive_counts = arr_labels.sum(axis=0)  # shape: (num_symbols,)
+        total_counts = arr_labels.shape[0]
+        positive_rate = positive_counts / total_counts
+        print("Label distribution per symbol (top-k positives):")
+        for sym, pos, rate in zip(self.symbols, positive_counts, positive_rate):
+            print(f"  {sym}: {int(pos)} positives, {rate:.4f} positive rate")
+
         valid_mask = ~np.isnan(arr_labels).any(axis=1)
         self.valid_idx = np.nonzero(valid_mask)[0]
         arr_labels = arr_labels[valid_mask]
