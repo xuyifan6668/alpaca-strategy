@@ -24,7 +24,7 @@ class Config:
 
     # Split ratios
     val_ratio: float = 0.1
-    test_ratio: float = 0.1
+    test_ratio: float = 0.2
 
     # System
     num_workers: int = 6  # Windows-compatible multiprocessing (2-4 workers max)
@@ -104,36 +104,12 @@ class StaticUniverse:
 
 
 tickers = [
-    "TSLA",  # Tesla
-    "NVDA",  # Nvidia
-    "AMZN",  # Amazon
-    "AAPL",  # Apple
-    "MSFT",  # Microsoft
-    "META",  # Meta Platforms (Facebook)
-    "GME",   # GameStop
-    "AMC",   # AMC Entertainment
-    "PLTR",  # Palantir
-    "OPEN",  # Opendoor
-    "MSTR",  # MicroStrategy
-    "ZM",  # Zoom
-    "BB",    # BlackBerry
-    "SMR",   # NuScale Power
-    "RUN",   # Sunrun
-    "BBAI",  # BigBear.ai
-    "QUBT",  # Quantum Computing Inc.
-    "APLD",  # Applied Digital
-    "OKLO",  # Oklo
-    "ASTS",  # AST SpaceMobile
-    "HIMS",  # Hims & Hers Health
-    "PLUG",  # Plug Power
-    "WOLF",  # Wolfspeed
-    "RYTM",  # Rhythm Pharmaceuticals
-    "IRON",  # Disc Medicine
-    "IDYA",  # Ideaya Biosciences
-    "NVCR",  # NovoCure
-    "HRMY",  # Harmony Biosciences
-    "SBLK",  # Star Bulk Carriers
-    "AGIO"   # Agios Pharmaceuticals
+ "TSLA", "RIVN", "F", "GM",
+    "NVDA", "AMD", "META", "CRM", "INTC", "GOOGL", "MSFT", "AAPL","NFLX",
+    "PYPL", "SQ",
+    "MPC", "DVN", "OXY", "APA", "HAL",
+    "REGN", "VRTX", "BIIB", "LLY", "MRNA",
+    "ROST", "BBWI", "TPR", "ULTA", "ETSY"
 ]
 
 

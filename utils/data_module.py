@@ -90,6 +90,12 @@ class AllSymbolsDataModule(pl.LightningDataModule):
                 continue
             raw[sym] = pd.read_parquet(p, engine="pyarrow")
         self.stock_dfs = {s: df for s, df in raw.items()}
+        # Diagnostic print to show which symbols are loaded and which are missing
+        loaded = set(self.stock_dfs.keys())
+        universe = set(DEFAULT_UNIVERSE.symbols)
+        missing = universe - loaded
+        print(f"Loaded symbols ({len(loaded)}): {sorted(loaded)}")
+        print(f"Missing symbols ({len(missing)}): {sorted(missing)}")
 
     # ----------------------------- setup ------------------------------------
     def setup(self, stage: str | None = None):

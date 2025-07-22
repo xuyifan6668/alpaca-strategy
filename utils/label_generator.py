@@ -91,4 +91,4 @@ class TopKBinaryLabelGenerator:
         return labels
 
 
-DEFAULT_LABEL_GEN = LogReturnLabelGenerator() 
+DEFAULT_LABEL_GEN = TopKBinaryLabelGenerator() 
