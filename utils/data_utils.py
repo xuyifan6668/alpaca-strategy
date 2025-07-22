@@ -16,6 +16,8 @@ import numpy as np
 from typing import List, Dict, Any
 from pandas_market_calendars import date_range, get_calendar
 from tqdm import tqdm
+from datetime import datetime
+from utils.env import DATA_KEY, DATA_SECRET
 
 def load_failed_symbols(failed_file_path):
     """Load stock symbols from failed symbols file"""
@@ -42,17 +44,15 @@ def get_sp500_symbols():
 
 def setup_config():
     """Setup configuration and constants"""
-    load_dotenv("env.py")
-    
     config = {
         'headers': {
             "accept": "application/json",
-            "APCA-API-KEY-ID": os.getenv("DATA_KEY"),
-            "APCA-API-SECRET-KEY": os.getenv("DATA_SECRET"),
+            "APCA-API-KEY-ID": DATA_KEY,
+            "APCA-API-SECRET-KEY": DATA_SECRET,
         },
         'base_url': "https://data.alpaca.markets/v2/stocks",
         'start_iso': "2025-01-02",
-        'end_iso': "2025-07-01",
+        'end_iso': "2025-07-18",
         'limit': 10_000,
         'feed_ticks': "iex",
         'out_dir': pathlib.Path("data")
@@ -64,7 +64,7 @@ def setup_config():
 def fetch_pages(url_base, data_key, headers):
     """Generic pagination fetcher for Alpaca API"""
     rows, token = [], None
-    syms = url_base.split("symbols=")[1].split("&")[0]
+    syms = url_base.split("stocks/")[1].split("/")[0]
     
     with tqdm(desc=f"Fetching {data_key} for {syms}", unit="page", leave=False) as pbar:
         while True:

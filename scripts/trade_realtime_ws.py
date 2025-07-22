@@ -36,7 +36,7 @@ from utils.trading import nyc_now, get_account_balance, smart_position_managemen
 PAPER = True
 SYMBOLS: List[str] = tickers
 SEQ_LEN = cfg.seq_len
-CHECKPOINT_PATH = "results/last.ckpt"
+CHECKPOINT_PATH = "results/micro-graph-v2/2nq20hxu/checkpoints/epoch-epoch=0.ckpt"
 TOP_K = 3
 MIN_PROB = 0.01
 HOLD_MINUTES = 10
@@ -114,7 +114,7 @@ def trades_to_min_realtime(trades_df: pd.DataFrame) -> pd.DataFrame:
     inter_ms = tr.groupby(["symbol", "timestamp"])["delta_ms"].agg(intertrade_ms_mean="mean").fillna(60000.0)
     bucket_cnt = (
         tr.pivot_table(
-            index=["symbol", "timestamp"], columns="size_bucket", values="s", aggfunc="count"
+            index=["symbol", "timestamp"], columns="size_bucket", values="s", aggfunc="count", observed=False
         )
         .fillna(0)
         .add_prefix("cnt_")
@@ -178,66 +178,43 @@ def can_make_prediction(symbol: str) -> bool:
 
 def check_and_trade():
     global BAR_INDEX, LAST_DECISION_TIME
-    
     all_ready = all(can_make_prediction(s) for s in SYMBOLS)
     if not all_ready:
         return
-
-    # Always increment BAR_INDEX to track cycles
     BAR_INDEX += 1
-    
-    # Check if enough time has passed since last trading decision
     now = nyc_now()
-    time_since_last_decision = (now - LAST_DECISION_TIME).total_seconds() / 60  # in minutes
-    
+    time_since_last_decision = (now - LAST_DECISION_TIME).total_seconds() / 60
     if time_since_last_decision < DECISION_INTERVAL_MINUTES:
         return
-    
     LAST_DECISION_TIME = now
-    
-
     try:
         win = {s: build_window_df(s) for s in SYMBOLS}
         preds = model.predict_batch(win)
-
         for s, info in preds.items():
-            PROB_HIST[s].append(info["cls_prob"])
-
+            PROB_HIST[s].append(info["prob"])
         smoothed: Dict[str, float] = {
             s: sum(dq) / PROB_WINDOW for s, dq in PROB_HIST.items() if len(dq) == PROB_WINDOW
         }
-
         ranked = sorted(
             ((s, p) for s, p in smoothed.items() if p >= MIN_PROB),
             key=lambda kv: kv[1],
             reverse=True,
         )
         top_syms = [s for s, _ in ranked[:TOP_K]]
-        
         now = nyc_now()
-
         candidates: List[str] = []
         cooldown_filtered: List[str] = []
-        
         for s in top_syms:
-            # Check if stock is in cooldown period
             if s in LIQUIDATED_COOLDOWN:
                 cooldown_end = LIQUIDATED_COOLDOWN[s]
                 if now < cooldown_end:
                     cooldown_filtered.append(s)
                     continue
                 else:
-                    # Cooldown expired, remove from list
                     del LIQUIDATED_COOLDOWN[s]
-            
             closes = [row["close"] for row in BAR_BUFFERS[s]][-15:]
             if timing_good(closes):
                 candidates.append(s)
-
-        # Print additional trading info
-
-
-        # Use smart position management instead of simple buy/sell
         smart_position_management(
             candidates=candidates,
             trading_client=trading_client,

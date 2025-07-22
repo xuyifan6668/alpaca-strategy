@@ -21,10 +21,9 @@ def fetch_symbol_data(symbol, config):
     
     # Build URL for trades only
     trades_url = (
-        f"{base_url}/trades?"
-        f"symbols={symbol}&"
+        f"{base_url}/{symbol}/trades?"
         f"start={start_iso}&end={end_iso}"
-        f"&feed={feed_ticks}&limit={limit}&sort=asc"
+        f"&limit={limit}&feed={feed_ticks}&sort=asc"
     )
     
     # Fetch trade data
@@ -76,7 +75,7 @@ def save_failed_symbols(symbols_dict, out_dir):
             f.write("\n".join(error) if error else "None\n")
     
 
-def process_symbols(symbols, config):
+def process_symbols(symbols, config, update=False):
     """Main processing function for multiple symbols"""
     out_dir = config['out_dir']
     
@@ -90,7 +89,7 @@ def process_symbols(symbols, config):
     for sym in tqdm(symbols, desc="Processing symbols", unit="symbol"):
         # Check if file already exists
         out_file = out_dir / f"{sym}_1min.parquet"
-        if out_file.exists():
+        if out_file.exists() and not update:
             skipped_count += 1
             skipped_symbols.append(sym)
             continue
@@ -122,15 +121,8 @@ def main():
     # Setup configuration
     config = setup_config()
     
-    symbols = tickers
-    # symbols = ["AAPL", "TSLA", "MSFT"]  # For testing with fewer symbols
-    
-    # symbols = load_failed_symbols("data/error_symbols_20250115_143022.txt")
-    
-
-    
     # Process all symbols
-    process_symbols(tickers, config)
+    process_symbols(tickers, config, update=True)
 
 if __name__ == "__main__":
     main() 

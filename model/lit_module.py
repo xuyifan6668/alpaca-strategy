@@ -53,8 +53,7 @@ class Lit(pl.LightningModule):
         # AdamW optimiser followed by One-Cycle learning-rate policy
         opt = torch.optim.AdamW(self.parameters(), lr=self.base_lr)
 
-        # Lightning sets `self.trainer` before this hook is called, so we
-        # can safely derive the total number of optimisation steps.
+
         total_steps = int(self.trainer.estimated_stepping_batches)  # type: ignore[attr-defined]
 
         oc_scheduler = OneCycleLR(
@@ -70,29 +69,27 @@ class Lit(pl.LightningModule):
             "optimizer": opt,
             "lr_scheduler": {
                 "scheduler": oc_scheduler,
-                "interval": "step",  # update learning-rate every batch
+                "interval": "step", 
             },
         }
 
     # ----------------------- shared step ----------------------------------
     def _step(self, batch, stage: str):
-        X, y_raw = batch  # y_raw: (B,S)
-        y_std = y_raw.std(dim=1, keepdim=True)
-        y_mean = y_raw.mean(dim=1, keepdim=True)
-        y_raw = (y_raw - y_mean) / (y_std + 1e-6)
+        X, y_raw = batch  # y_raw: (B, S)
+        logits = self.net(X)  # logits: (B, S)
 
-        logits = self.net(X)
+        loss = F.binary_cross_entropy_with_logits(logits, y_raw)
 
-        loss = spearman_loss(logits, y_raw) + 0.1 * F.mse_loss(logits, y_raw)
+        # Top-k accuracy calculation
+        k = getattr(self.trainer.datamodule.train_ds.dataset, 'top_k', 3) if hasattr(self.trainer, 'datamodule') else 3
+        with torch.no_grad():
+            pred_topk = torch.topk(logits, k=k, dim=1).indices  # (B, k)
+            true_topk = torch.topk(y_raw, k=k, dim=1).indices   # (B, k)
+            # For each sample, count how many predicted top k are in true top k
+            match = (pred_topk.unsqueeze(2) == true_topk.unsqueeze(1)).any(2).float().mean()
+            self.log(f"{stage}_top{k}_acc", match, prog_bar=True)
 
-        # Metrics ----------------------------------------------------------
-        metrics = compute_metrics(logits, y_raw)
-        loss = loss + 0.05 * torch.relu(-metrics["ic"])
-
-        # Logging ----------------------------------------------------------
         self.log(f"{stage}_loss", loss, prog_bar=(stage != "train"))
-        for k, v in metrics.items():
-            self.log(f"{stage}_{k}", v, prog_bar=(k != "spread"))
         return loss
 
     # ---------------- Lightning hooks -------------------------------------
@@ -107,7 +104,7 @@ class Lit(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         X, _ = batch
-        return torch.sigmoid(self.net(X)).cpu().numpy()
+        return torch.sigmoid(self.net(X)).cpu().numpy() 
     
     def on_save_checkpoint(self, checkpoint):
         """Save scalers in the checkpoint."""
