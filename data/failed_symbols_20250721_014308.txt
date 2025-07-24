@@ -1,0 +1,37 @@
+# All failed symbols - 20250721_014308
+# Skipped: 0, Errors: 30
+
+# Skipped symbols:
+None
+
+# Error symbols:
+TSLA
+NVDA
+AMZN
+AAPL
+MSFT
+META
+GME
+AMC
+PLTR
+OPEN
+MSTR
+ZM
+BB
+SMR
+RUN
+BBAI
+QUBT
+APLD
+OKLO
+ASTS
+HIMS
+PLUG
+WOLF
+RYTM
+IRON
+IDYA
+NVCR
+HRMY
+SBLK
+AGIO

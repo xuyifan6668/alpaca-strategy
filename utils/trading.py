@@ -7,10 +7,42 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 from utils.env import DEBUG
+import pandas_market_calendars as mcal
+from datetime import timedelta
 
 
 def nyc_now() -> datetime:
     return datetime.now(pytz.timezone("America/New_York")).replace(tzinfo=None)
+
+
+def log(msg):
+    """Consistent logging helper."""
+    from datetime import datetime
+    print(f"[{datetime.now().isoformat()}] {msg}")
+
+
+def wait_until(dt):
+    """Sleep until the specified datetime (NYC time)."""
+    from .trading import nyc_now
+    import time
+    now = nyc_now()
+    seconds = (dt - now).total_seconds()
+    if seconds > 0:
+        log(f"Waiting {seconds/60:.1f} minutes until {dt}...")
+        time.sleep(seconds)
+
+
+def get_next_market_session():
+    """Return the next (market_open, market_close) tuple as naive datetimes in NYC time."""
+    nyse = mcal.get_calendar("NYSE")
+    now = nyc_now()
+    sched = nyse.schedule(start_date=now.date(), end_date=now.date() + timedelta(days=10), tz="America/New_York")
+    for idx, row in sched.iterrows():
+        open_dt = row['market_open'].to_pydatetime().replace(tzinfo=None)
+        close_dt = row['market_close'].to_pydatetime().replace(tzinfo=None)
+        if now < close_dt:
+            return open_dt, close_dt
+    return None, None
 
 
 def save_position_change(action, symbol, qty, price=None, reason="", save_dir="results/logs"):
@@ -184,11 +216,6 @@ def get_current_positions(trading_client):
                 'unrealized_pl': float(position.unrealized_pl)
             }
             total_value += market_value
-        
-        if not current_positions:
-            print("No positions")
-        else:
-            print(f"Positions: ${total_value:.0f} total value")
         
         return current_positions, total_value
         
@@ -428,3 +455,22 @@ def manage_positions(positions, hold_minutes, trading_client, liquidated_cooldow
         except Exception as e:
             if DEBUG:
                 print(f"Error saving trading summary: {e}") 
+
+
+def liquidate_all_positions(trading_client):
+    """Liquidate all open positions immediately."""
+    positions, _ = get_current_positions(trading_client)
+    for symbol, pos in positions.items():
+        qty = pos['qty']
+        held = pos.get('held_for_orders', 0)
+        available = qty - held
+        if available > 0:
+            req = MarketOrderRequest(symbol=symbol, qty=available, side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
+            try:
+                trading_client.submit_order(order_data=req)
+                print(f"LIQUIDATE {symbol} {available} shares - End of day liquidation")
+                save_order_log(symbol, "SELL", available, "MARKET", "End of day liquidation")
+            except Exception as e:
+                print(f"Error liquidating {symbol}: {e}")
+        else:
+            print(f"Skipping {symbol}: {qty} held, {held} held for orders, 0 available. Waiting for previous order to fill/cancel.") 

@@ -10,7 +10,8 @@ import pytorch_lightning as pl
 from utils.utils_ranking import spearman_loss
 from utils.metrics import compute_metrics
 from model.models_encoder import Encoder
-from utils.config import cfg
+from utils.config import get_config
+cfg = get_config()
 
 # ---------------------------------------------------------------------------
 # LightningModule

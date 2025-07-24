@@ -14,7 +14,8 @@ import torch.nn as nn
 # inject their own configuration for easier testing and hyper-parameter
 # sweeps.
 
-from utils.config import cfg as _global_cfg, FEAT_DIM, MINUTE_IDX
+from utils.config import get_config, FEAT_DIM, MINUTE_IDX
+cfg = get_config()
 
 # ---------------------------------------------------------------------------
 # 1. Time2Vec positional encoder
@@ -56,7 +57,7 @@ class Encoder(nn.Module):
         If not supplied, falls back to the project's default global `cfg`.
     """
 
-    def __init__(self, *, cfg=_global_cfg):
+    def __init__(self, *, cfg=cfg):
         super().__init__()
 
         self.cfg = cfg  # store local reference

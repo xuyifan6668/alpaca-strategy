@@ -2,46 +2,41 @@ from __future__ import annotations
 import asyncio
 import sys
 import os
-from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
+import psutil
+from collections import deque
+from datetime import datetime, timedelta
 from typing import Dict, List
 import json
-import websockets
-import threading
+import pathlib
+import time
 
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-import numpy as np
 import pandas as pd
 import pytz
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.data import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockTradesRequest
-from alpaca.data.timeframe import TimeFrame
-import torch
 
 from utils.env import DATA_KEY, DATA_SECRET, TRADE_KEY, TRADE_SECRET, DEBUG
 from scripts.backtest_with_model import ModelWrapper
-from utils.config import cfg, tickers, ALL_COLS
-from utils.data_utils import apply_smart_fill_to_dict, smart_fill_features, add_minute_norm
+from utils.config import get_config, tickers, ALL_COLS
+cfg = get_config()
+from utils.data_utils import smart_fill_features, add_minute_norm, trades_to_min, floor_minute
 import pandas_market_calendars as mcal
-from utils.monitor import show_stream_status, is_market_hours
-from utils.trading import nyc_now, get_account_balance, smart_position_management
-
+from utils.trading import nyc_now, smart_position_management, liquidate_all_positions, wait_until, get_next_market_session
+from scripts.fetch_trade_data import process_symbols, setup_config
+from scripts.train import train_model
 
 PAPER = True
 SYMBOLS: List[str] = tickers
 SEQ_LEN = cfg.seq_len
-CHECKPOINT_PATH = "results/micro-graph-v2/2nq20hxu/checkpoints/epoch-epoch=0.ckpt"
+CHECKPOINT_PATH = "results/micro-graph-v2/rb2pidc4/checkpoints/epoch-epoch=0.ckpt"
 TOP_K = 3
 MIN_PROB = 0.01
 HOLD_MINUTES = 10
 COOLDOWN_MINUTES = 15  # Wait 15 minutes before re-buying a liquidated stock
-
+LIQUIDATE_MINUTES_BEFORE_CLOSE = 2
 PROB_WINDOW = 3 
 DECISION_INTERVAL_MINUTES = 1  # Make trading decisions every 1 minute
 MAX_POSITIONS = 3
@@ -58,7 +53,6 @@ LIQUIDATED_COOLDOWN: Dict[str, datetime] = {}  # Track recently liquidated stock
 POSITION_ENTRY_TIMES: Dict[str, datetime] = {}  # Track when positions were opened
 
 trading_client = TradingClient(TRADE_KEY, TRADE_SECRET, paper=PAPER)
-model = ModelWrapper(CHECKPOINT_PATH, device="cpu")
 
 
 PROB_HIST: Dict[str, deque] = {sym: deque(maxlen=PROB_WINDOW) for sym in SYMBOLS}
@@ -80,61 +74,6 @@ def get_previous_trading_day() -> datetime:
     schedule = nyse.schedule(start_date=today - timedelta(days=7), end_date=today)
     last_trading_day = schedule.index[-2].date()
     return datetime.combine(last_trading_day, datetime.min.time())
-
-
-def floor_minute(timestamp: datetime) -> datetime:
-    return timestamp.replace(second=0, microsecond=0)
-
-
-def trades_to_min_realtime(trades_df: pd.DataFrame) -> pd.DataFrame:
-    if trades_df.empty:
-        return pd.DataFrame()
-    
-    tr = trades_df.copy()
-    tr["dollar_value"] = tr["p"] * tr["s"]
-    tr["cond_is_regular"] = tr["c"].apply(lambda x: int("@" in str(x)))
-    tr["odd_lot"] = tr["c"].apply(lambda x: int("I" in str(x)))
-    
-    bucket = pd.cut(tr["s"], bins=[-1, 99, 499, 1999, np.inf], labels=["tiny", "small", "mid", "large"])
-    tr["size_bucket"] = bucket
-    price_agg = tr.groupby(["symbol", "timestamp"])["p"].agg(
-        first="first", last="last", high="max", low="min", mean="mean", std="std"
-    )
-    
-    other_agg = tr.groupby(["symbol", "timestamp"]).agg(
-        trade_count=("p", "count"),
-        trade_size_sum=("s", "sum"),
-        dollar_volume=("dollar_value", "sum"),
-        cond_is_regular=("cond_is_regular", "sum"),
-        odd_lot_count=("odd_lot", "sum"),
-    )
-    
-    tr["t_dt"] = pd.to_datetime(tr["t"], format="ISO8601", utc=True).dt.tz_convert("America/New_York")
-    tr["delta_ms"] = tr.groupby("symbol")["t_dt"].diff().dt.total_seconds() * 1e3
-    inter_ms = tr.groupby(["symbol", "timestamp"])["delta_ms"].agg(intertrade_ms_mean="mean").fillna(60000.0)
-    bucket_cnt = (
-        tr.pivot_table(
-            index=["symbol", "timestamp"], columns="size_bucket", values="s", aggfunc="count", observed=False
-        )
-        .fillna(0)
-        .add_prefix("cnt_")
-    )
-    
-    tm = price_agg.join(other_agg).join(inter_ms).join(bucket_cnt).reset_index()
-    tm = tm.rename(columns={
-        "first": "open",
-        "last": "close", 
-        "high": "high",
-        "low": "low",
-        "trade_size_sum": "volume"
-    })
-    tm["trade_size_sum"] = tm["volume"]
-    tm["vwap"] = tm["dollar_volume"] / tm["volume"]
-    tm["vwap"] = tm["vwap"].fillna(tm["close"])
-    tm.sort_values(["symbol", "timestamp"], inplace=True)
-    
-    return tm
-
 
 
 
@@ -159,14 +98,14 @@ def process_minute_trades(sym: str):
         return
     
     trades_df = pd.DataFrame(trades)
-    trades_df = trades_df.rename(columns={'price': 'p', 'size': 's', 'timestamp': 't', 'conditions': 'c'})
-    trades_df['symbol'] = sym
-    trades_df['timestamp'] = pd.to_datetime(trades_df['t']).dt.floor('min')
+    trades_df = floor_minute(trades_df)
     
-    minute_bars = trades_to_min_realtime(trades_df)
+    minute_bars = trades_to_min(trades_df)
     
     for _, bar in minute_bars.iterrows():
         BAR_BUFFERS[sym].append(bar.to_dict())
+        # Append to Parquet file for persistent storage
+        # append_bar_to_parquet(sym, bar.to_dict())
     
     TRADE_BUFFERS[sym] = []
     check_and_trade()
@@ -192,8 +131,9 @@ def check_and_trade():
         preds = model.predict_batch(win)
         for s, info in preds.items():
             PROB_HIST[s].append(info["prob"])
+        smooth_len=min(PROB_WINDOW, len(PROB_HIST[s]))
         smoothed: Dict[str, float] = {
-            s: sum(dq) / PROB_WINDOW for s, dq in PROB_HIST.items() if len(dq) == PROB_WINDOW
+            s: sum(dq) / smooth_len for s, dq in PROB_HIST.items() if len(dq) == smooth_len
         }
         ranked = sorted(
             ((s, p) for s, p in smoothed.items() if p >= MIN_PROB),
@@ -201,7 +141,19 @@ def check_and_trade():
             reverse=True,
         )
         top_syms = [s for s, _ in ranked[:TOP_K]]
+        market_open, market_close = get_today_market_open_close()
+        if market_open is None or market_close is None:
+            print("Market closed today. No trading.")
+            return
         now = nyc_now()
+        if now < market_open:
+            print("Market not open yet. No trading.")
+            return
+        if now >= market_close - timedelta(minutes=10):
+            print("Less than 10 minutes to market close. Liquidating all positions.")
+            liquidate_all_positions(trading_client)
+            return
+        LAST_DECISION_TIME = now
         candidates: List[str] = []
         cooldown_filtered: List[str] = []
         for s in top_syms:
@@ -215,6 +167,13 @@ def check_and_trade():
             closes = [row["close"] for row in BAR_BUFFERS[s]][-15:]
             if timing_good(closes):
                 candidates.append(s)
+        
+        # Summary print for predictions and timing
+        for s in candidates:
+            closes = [row["close"] for row in BAR_BUFFERS[s]][-15:]
+            timing = timing_good(closes)
+            print(f"{s}: smoothed_prob={smoothed[s]:.3f}") 
+
         smart_position_management(
             candidates=candidates,
             trading_client=trading_client,
@@ -257,7 +216,7 @@ def timing_good(prices: List[float]) -> bool:
 
 
 
-async def on_trade(sym: str, trade):
+async def on_trade(sym: str, trade: dict):
     """Process incoming trade and accumulate for minute aggregation."""
     global TOTAL_TRADES_RECEIVED, LAST_TRADE_TIME
     
@@ -268,15 +227,8 @@ async def on_trade(sym: str, trade):
     TRADE_COUNTER[sym] += 1
     TOTAL_TRADES_RECEIVED += 1
     
-    
-    # Handle both real Alpaca Trade objects and fake trade objects
-    if hasattr(trade.timestamp, 'to_pydatetime'):
-        ts = trade.timestamp.to_pydatetime().replace(tzinfo=None)
-    else:
-        ts = trade.timestamp.replace(tzinfo=None) if trade.timestamp.tzinfo else trade.timestamp
-    
-    minute_start = floor_minute(ts)
-    
+    # Floor to minute for a single datetime object
+    minute_start = trade['t'].replace(second=0, microsecond=0, tzinfo=None)
     # Check if we're starting a new minute
     if sym in CURRENT_MINUTE and CURRENT_MINUTE[sym] != minute_start:
         # Process the previous minute's trades
@@ -286,140 +238,13 @@ async def on_trade(sym: str, trade):
     CURRENT_MINUTE[sym] = minute_start
     
     # Add trade to buffer
-    trade_dict = {
-        'timestamp': ts,
-        'price': float(trade.price),
-        'size': int(trade.size),
-        'conditions': trade.conditions or [],
-    }
-    TRADE_BUFFERS[sym].append(trade_dict)
 
+    TRADE_BUFFERS[sym].append(trade)
 
-async def populate_historical_buffer():
-    """Pre-populate buffers using REST API."""
-    import requests
-    import urllib.parse
-    import time
-    
-    # Setup headers
-    headers = {
-        "accept": "application/json",
-        "APCA-API-KEY-ID": DATA_KEY,
-        "APCA-API-SECRET-KEY": DATA_SECRET,
-    }
-    base_url = "https://data.alpaca.markets/v2/stocks"
-    
-    # Get target date - go back enough to ensure data availability
-    previous_trading_day = get_previous_trading_day()
-    target_date = previous_trading_day
-    start_iso = target_date.strftime("%Y-%m-%d")
-    end_iso = (target_date + timedelta(days=2)).strftime("%Y-%m-%d")
-    
-    def fetch_trades_rest(symbol: str) -> pd.DataFrame:
-        """Fetch trades using REST API."""
-        trades_url = (
-            f"{base_url}/trades?symbols={symbol}&start={start_iso}&end={end_iso}"
-            f"&feed=iex&limit=10000&sort=asc"
-        )
-        
-        all_trades = []
-        token = None
-        
-        while True:
-            url = trades_url + (f"&page_token={urllib.parse.quote_plus(token)}" if token else "")
-            
-            try:
-                response = requests.get(url, headers=headers, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-                
-                trades_data = data.get("trades", {}).get(symbol, [])
-                if trades_data:
-                    df = pd.DataFrame(trades_data)
-                    df["symbol"] = symbol
-                    all_trades.append(df)
-                
-                token = data.get("next_page_token")
-                if not token:
-                    break
-                    
-                time.sleep(0.1)  # Rate limiting
-                
-            except Exception as e:
-                print(f"Data fetch error for {symbol}: {e}")
-                break
-        
-        if all_trades:
-            result = pd.concat(all_trades, ignore_index=True)
-            result["timestamp"] = pd.to_datetime(result["t"], format="ISO8601", utc=True).dt.tz_convert("America/New_York").dt.floor("min").dt.tz_localize(None)
-            return result
-        else:
-            return pd.DataFrame()
-    
-    try:
-        all_symbol_data = {}
-        
-        for symbol in SYMBOLS:
-            trades_df = fetch_trades_rest(symbol)
-            
-            if not trades_df.empty:
-                minute_bars = trades_to_min_realtime(trades_df)
-                
-                if not minute_bars.empty and len(minute_bars) >= 50:
-                    all_symbol_data[symbol] = minute_bars
-        
-        # Apply canonical calendar alignment and smart fill
-        if all_symbol_data:
-            # Create canonical trading minute timeline
-            nyse = mcal.get_calendar("NYSE")
-            canon_schedule = nyse.schedule(start_date=target_date, end_date=target_date + timedelta(days=1))
-            canon_idx = mcal.date_range(canon_schedule, frequency="1min", closed="both")
-            canon_idx = canon_idx.tz_convert("America/New_York").tz_localize(None)
-            
-            # Filter out future minutes to avoid fake data
-            current_time = nyc_now()
-            current_minute = floor_minute(current_time).replace(tzinfo=None)
-            canon_idx = canon_idx[canon_idx <= current_minute]
-            
-        
-            
-            # Align each symbol to canonical timeline
-            aligned_data = {}
-            for symbol, df in all_symbol_data.items():
-                aligned_df = df.set_index('timestamp').reindex(canon_idx).reset_index()
-                aligned_df = aligned_df.rename(columns={'index': 'timestamp'})
-                aligned_data[symbol] = aligned_df
-            
-            # Apply smart fill
-            filled_data = apply_smart_fill_to_dict(aligned_data, align_stocks=True, verbose=False)
-            
-            # Populate the global buffers
-            symbols_ready = 0
-            for symbol, filled_df in filled_data.items():
-                if len(filled_df) >= 120:
-                    # Take the most recent 120 bars
-                    recent_data = filled_df.tail(120)
-                    for _, bar in recent_data.iterrows():
-                        BAR_BUFFERS[symbol].append(bar.to_dict())
-                    symbols_ready += 1
-                else:
-                    print(f"Warning: {symbol}: Only {len(filled_df)} bars available (need 120)")
-            
-            print(f"Ready: {symbols_ready}/{len(SYMBOLS)} symbols with sufficient data")
-        else:
-            print("Warning: No data found for any symbols")
-    
-    except Exception as e:
-        print(f"Error populating historical buffer: {e}")
-        import traceback
-        traceback.print_exc()
 
 
 def cleanup_existing_connections():
     """Kill existing trading processes and connections before starting."""
-    import psutil
-    import signal
-    import os
     
 
     
@@ -505,80 +330,132 @@ def kill_all_trading_processes():
     sys.exit(0)
 
 
-def main():
-    import asyncio
-    import signal
-    import threading
-    
-    cleanup_existing_connections()
-    
-    print(f"Starting live trading system...")
-    
-    current_balance = get_account_balance(trading_client)
-    
-    asyncio.run(populate_historical_buffer())
-    
-    # Add signal handler for status reporting (Ctrl+\)
-    def signal_handler(signum, frame):
-        show_stream_status(STREAM_START_TIME, LAST_TRADE_TIME, TOTAL_TRADES_RECEIVED, TRADE_COUNTER, SYMBOLS)
-    
-    signal.signal(signal.SIGQUIT, signal_handler)
+async def populate_historical_buffer():
+    """
+    For each symbol, update the Parquet file up to the previous trading day,
+    then load the last SEQ_LEN bars into BAR_BUFFERS for real-time use.
+    """
+    data_dir = "data"
+    seq_len = cfg.seq_len
 
-    def run_market_data_stream():
-        """Run market data stream using raw WebSocket."""
+    # Update all symbols up to the previous day using 'update' mode
+    process_symbols(tickers, data_dir=data_dir, mode='update')
+
+    # Now load the last SEQ_LEN bars for each symbol into BAR_BUFFERS
+    for symbol in tickers:
+        file_path = pathlib.Path(data_dir) / f"{symbol}_1min.parquet"
+        if not file_path.exists():
+            print(f"{symbol}: Parquet file not found after update.")
+            continue
+        try:
+            df = pd.read_parquet(file_path)
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                last_bars = df.sort_values('timestamp').tail(seq_len)
+                BAR_BUFFERS[symbol].clear()
+                for _, bar in last_bars.iterrows():
+                    BAR_BUFFERS[symbol].append(bar.to_dict())
+                print(f"{symbol}: Loaded {len(BAR_BUFFERS[symbol])} bars into buffer.")
+            else:
+                print(f"{symbol}: No timestamp column in parquet file.")
+        except Exception as e:
+            print(f"{symbol}: Error reading parquet file: {e}")
+
+def run_market_data_stream():
+    import time
+    import asyncio
+    import websockets
+    from datetime import datetime, timedelta
+    
+    market_open, market_close = get_today_market_open_close()
+    print(f"Market open! Trading until {market_close - timedelta(minutes=10)}.")
+    try:
         async def start_raw_stream():
-            raw_stream = RawWebSocketStream(DATA_KEY, DATA_SECRET, paper=PAPER)
-            # Use live IEX feed for real market data
-            raw_stream.ws_url = "wss://stream.data.alpaca.markets/v2/iex"
-            
             try:
-                import websockets
+                raw_stream = RawWebSocketStream(DATA_KEY, DATA_SECRET, paper=PAPER)
+                raw_stream.ws_url = "wss://stream.data.alpaca.markets/v2/iex"
                 async with websockets.connect(raw_stream.ws_url) as websocket:
                     raw_stream.websocket = websocket
-
-                    
-                    # Authenticate
                     if await raw_stream.authenticate():
-                        # Subscribe to our trading symbols  
                         await raw_stream.subscribe_trades(SYMBOLS)
-                        
-                        # Listen for messages
                         async for message in websocket:
+                            now = nyc_now()
+                            if now >= market_close - timedelta(minutes=LIQUIDATE_MINUTES_BEFORE_CLOSE):
+                                print(f"Less than {LIQUIDATE_MINUTES_BEFORE_CLOSE} minutes to market close. Liquidating all positions and stopping stream.")
+                                liquidate_all_positions(trading_client)
+                                return
                             await raw_stream.handle_message(message)
-                            
+            except websockets.exceptions.ConnectionClosedError as e:
+                print(f"WebSocket closed: {e}. Reconnecting in 5 seconds...")
+                time.sleep(5)
             except Exception as e:
-                print(f"WebSocket error: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        try:
-            asyncio.run(start_raw_stream())
-        except Exception as e:
-            print(f"Market data stream error: {e}")
+                print(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
+                time.sleep(5)
+        asyncio.run(start_raw_stream())
+    except Exception as e:
+        print(f"Market data stream error: {e}")
+    print("Market closing soon. Exiting run_market_data_stream.")
 
-    print(f"Market data stream ready. Press Ctrl+\\ for status, Ctrl+C to stop")
 
+def train_model_with_new_data():
+    print("Market closed. Training model with new data (in-process)...")
     try:
-        # Start market data stream in main thread
-        run_market_data_stream()
-    except KeyboardInterrupt:
-        pass
-    finally:
+        checkpoint_path = CHECKPOINT_PATH  # Use the same path as the trading stream
+        start_time = datetime.now().date()
+        end_time = start_time + timedelta(days=1)
+        split_ratio = (1, 0, 0) 
+        train_model(checkpoint_path=checkpoint_path, start_time=start_time, end_time=end_time, split_ratio=split_ratio)
+        print("Model training complete.")
+    except Exception as e:
+        print(f"Model training failed: {e}")
 
-        print(f"Final stats: {TOTAL_TRADES_RECEIVED} trades, {len([s for s, count in TRADE_COUNTER.items() if count > 0])}/{len(SYMBOLS)} active symbols")
-        try:
-            import psutil
-            import os
-            current_pid = os.getpid()
-            # Close any remaining WebSocket connections
-            for proc in psutil.process_iter(['pid', 'connections']):
-                if proc.info['pid'] == current_pid:
-                    continue
-        except Exception as e:
-            if DEBUG:
-                print(f"Cleanup error: {e}")
-        
-        print(f"Shutdown complete.")
+
+def main():
+    from datetime import datetime, timedelta
+    import time
+    while True:
+        market_open, market_close = get_next_market_session()
+        now = nyc_now()
+        if market_open is None or market_close is None:
+            print("No upcoming market session found. Sleeping 12 hours.")
+            time.sleep(12 * 3600)
+            continue
+        if now < market_open:
+            print(f"Waiting for next market open at {market_open}...")
+            wait_until(market_open)
+            continue
+        if now >= market_close - timedelta(minutes=LIQUIDATE_MINUTES_BEFORE_CLOSE) and now < market_close:
+            print(f"Market is closing ...")
+            wait_until(market_close+timedelta(minutes=10))
+            
+            next_open, _ = get_next_market_session()
+            if next_open is not None and next_open > now:
+                wait_until(next_open)
+            else:
+                time.sleep(12 * 3600)
+            continue
+        if now >= market_close:
+            next_open, _ = get_next_market_session()
+            if next_open is not None and next_open > now:
+                wait_until(next_open)
+            else:
+                time.sleep(12 * 3600)
+            continue
+        # Now in a valid session window
+        model = ModelWrapper(CHECKPOINT_PATH, device="cpu")
+        print("Market open and not near close. Proceeding with trading session logic...")
+        print("Market open! Liquidating all positions to ensure no carryover...")
+        liquidate_all_positions(trading_client)
+        print("All positions liquidated. Running pre-market data update...")
+        process_symbols(tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
+        print("Pre-market process_symbols done. Populating historical buffer...")
+        asyncio.run(populate_historical_buffer())
+        print("Historical buffer populated. Starting trading stream...")
+        run_market_data_stream()
+        print("Trading session ended. Will wait for next open.")
+        wait_until(market_close + timedelta(minutes=10))
+        process_symbols(tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
+        train_model_with_new_data()
 
 
 # Raw WebSocket streaming (alternative to SDK)
@@ -653,7 +530,6 @@ class RawWebSocketStream:
             size = int(item.get("s", 0))
             timestamp_raw = item.get("t", 0)
             conditions = item.get("c", [])
-            
             # Handle both string and numeric timestamps
             try:
                 if isinstance(timestamp_raw, str):
@@ -677,18 +553,16 @@ class RawWebSocketStream:
                 timestamp = nyc_now().replace(tzinfo=None)
             
             # Create trade object for compatibility
-            class FakeRawTrade:
-                def __init__(self, symbol, price, size, timestamp, conditions):
-                    self.symbol = symbol
-                    self.price = price
-                    self.size = size
-                    self.timestamp = timestamp
-                    self.conditions = conditions
-            
-            fake_trade = FakeRawTrade(symbol, price, size, timestamp, conditions)
+            trade = {
+                "symbol": symbol,
+                "p": price,
+                "s": size,
+                "t": timestamp,
+                "c": conditions
+            }
             
             # Process real symbols
-            await on_trade(symbol, fake_trade)
+            await on_trade(symbol, trade)
             
         elif msg_type == "error":
             print(f"Stream error: {item.get('msg', 'Unknown error')}")
@@ -697,4 +571,5 @@ class RawWebSocketStream:
 
 
 if __name__ == "__main__":
+    config = setup_config()
     main()

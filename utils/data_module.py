@@ -5,15 +5,14 @@ from __future__ import annotations
 import pathlib
 from typing import Dict
 
-import numpy as np
 import pandas as pd
-import torch
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset, DataLoader, Subset
 import pytorch_lightning as pl
 
-from utils.config import ALL_COLS, FEAT_DIM, cfg, DEFAULT_UNIVERSE
-from utils.label_generator import DEFAULT_LABEL_GEN, LabelGenerator, TopKBinaryLabelGenerator
+from utils.config import get_config, ALL_COLS, FEAT_DIM, DEFAULT_UNIVERSE
+cfg = get_config()
+from utils.label_generator import DEFAULT_LABEL_GEN, TopKBinaryLabelGenerator
 from utils.data_utils import add_minute_norm
 
 # ---------------------------------------------------------------------------
@@ -21,8 +20,11 @@ from utils.data_utils import add_minute_norm
 # ---------------------------------------------------------------------------
 
 class WindowDataset(Dataset):
+    """
+    Dataset for windowed time series data for multiple symbols.
+    """
     def __init__(self, stock_dfs: Dict[str, pd.DataFrame], scalers: Dict[str, StandardScaler], *,
-                 label_generator: LabelGenerator = None,
+                 label_generator: TopKBinaryLabelGenerator = None,
                  cache_dir: str | pathlib.Path | None = None,
                  top_k: int = 3):
         self.stock_dfs = stock_dfs
@@ -32,8 +34,7 @@ class WindowDataset(Dataset):
         self.seq_len, self.horizon = cfg.seq_len, cfg.horizon
         self.nw = len(next(iter(stock_dfs.values()))) - self.seq_len - self.horizon
         if self.nw <= 0:
-            raise ValueError("seq_len + horizon too large for dataset")
-
+            raise ValueError("seq_len + horizon too large for dataset or not enough data after filtering")
         self.label_generator = label_generator or TopKBinaryLabelGenerator(k=top_k)
         self.cache_dir = pathlib.Path(cache_dir) if cache_dir else None
 
@@ -80,13 +81,26 @@ class WindowDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 class AllSymbolsDataModule(pl.LightningDataModule):
-    def __init__(self):
+    """
+    LightningDataModule for all symbols, with configurable time interval and split ratio.
+    Args:
+        start_time (str/datetime): Start of data interval (inclusive, filter by timestamp)
+        end_time (str/datetime): End of data interval (inclusive, filter by timestamp)
+        split_ratio (tuple): (train, val, test) split fractions, e.g. (0.8, 0.1, 0.1)
+    """
+    def __init__(self, start_time=None, end_time=None, split_ratio=(0.8, 0.1, 0.1)):
         super().__init__()
         self.stock_dfs: Dict[str, pd.DataFrame] | None = None
         self.scalers: Dict[str, StandardScaler] | None = None
+        self.start_time = pd.to_datetime(start_time) if start_time is not None else None
+        self.end_time = pd.to_datetime(end_time) if end_time is not None else None
+        self.split_ratio = split_ratio
 
-    # ---------------------------- prepare_data ------------------------------
     def prepare_data(self):
+        """
+        Loads and filters data for all symbols. Filters by timestamp if start_time/end_time are set.
+        Raises FileNotFoundError if no data, or ValueError if filtered data is too short.
+        """
         files = sorted(pathlib.Path(cfg.data_dir).glob("*_1min.parquet"))
         if not files:
             raise FileNotFoundError("No parquet files found in data_dir")
@@ -95,38 +109,47 @@ class AllSymbolsDataModule(pl.LightningDataModule):
             sym = p.stem.split("_")[0]
             if not DEFAULT_UNIVERSE.contains(sym):
                 continue
-            raw[sym] = pd.read_parquet(p, engine="pyarrow")
+            df = pd.read_parquet(p, engine="pyarrow")
+            if self.start_time is not None:
+                df = df[df['timestamp'] >= self.start_time]
+            if self.end_time is not None:
+                df = df[df['timestamp'] <= self.end_time]
+            if len(df) < cfg.seq_len + cfg.horizon:
+                print(f"Warning: {sym} has too little data after filtering, skipping.")
+                continue
+            raw[sym] = df
         self.stock_dfs = {s: df for s, df in raw.items()}
-        # Diagnostic print to show which symbols are loaded and which are missing
         loaded = set(self.stock_dfs.keys())
         universe = set(DEFAULT_UNIVERSE.symbols)
         missing = universe - loaded
         print(f"Loaded symbols ({len(loaded)}): {sorted(loaded)}")
         print(f"Missing symbols ({len(missing)}): {sorted(missing)}")
+        if not self.stock_dfs:
+            raise ValueError("No symbols with sufficient data after filtering.")
 
-    # ----------------------------- setup ------------------------------------
     def setup(self, stage: str | None = None):
+        """
+        Splits data into train/val/test using split_ratio. Uses cfg.seq_len and cfg.horizon for windowing.
+        """
         assert self.stock_dfs is not None
         full_len = len(next(iter(self.stock_dfs.values())))
         nw = full_len - cfg.seq_len - cfg.horizon
-        n_test = int(nw * cfg.test_ratio)
-        n_val = int(nw * cfg.val_ratio)
-        tr_idx = list(range(0, nw - n_val - n_test))
-        va_idx = list(range(nw - n_val - n_test, nw - n_test))
-        te_idx = list(range(nw - n_test, nw))
-
-        last_train_row = tr_idx[-1] + cfg.seq_len + cfg.horizon - 1
+        tr_ratio, va_ratio, te_ratio = self.split_ratio
+        n_tr = int(nw * tr_ratio)
+        n_va = int(nw * va_ratio)
+        n_te = nw - n_tr - n_va
+        tr_idx = list(range(0, n_tr))
+        va_idx = list(range(n_tr, n_tr + n_va))
+        te_idx = list(range(n_tr + n_va, n_tr + n_va + n_te))
+        last_train_row = tr_idx[-1] + cfg.seq_len + cfg.horizon - 1 if tr_idx else 0
         self.scalers = {}
         for s, df in self.stock_dfs.items():
-            # Add minute_norm first, then access ALL_COLS
             df_with_norm = add_minute_norm(df)
             self.stock_dfs[s] = df_with_norm
-            train_data = df_with_norm.iloc[: last_train_row + 1][ALL_COLS].values
+            train_data = df_with_norm.iloc[: last_train_row + 1][ALL_COLS].values if last_train_row > 0 else df_with_norm[ALL_COLS].values
             scaler = StandardScaler().fit(train_data)
             self.scalers[s] = scaler
-        
         self.global_scaler = next(iter(self.scalers.values()))
-
         full_ds = WindowDataset(self.stock_dfs, self.scalers, label_generator=DEFAULT_LABEL_GEN)
         self.train_ds = Subset(full_ds, tr_idx)
         self.val_ds = Subset(full_ds, va_idx)

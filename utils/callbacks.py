@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from utils.config import cfg
+from utils.config import get_config
+cfg = get_config()
 
 
 def default_callbacks(conf: cfg.__class__ = cfg):
