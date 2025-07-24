@@ -1,35 +1,33 @@
 from __future__ import annotations
 import asyncio
-import sys
-import os
+
 import psutil
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, List
 import json
 import pathlib
-import time
-
-# Add project root to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+import os
 
 import pandas as pd
 import pytz
 from alpaca.trading.client import TradingClient
 
-from utils.env import DATA_KEY, DATA_SECRET, TRADE_KEY, TRADE_SECRET, DEBUG
-from scripts.backtest_with_model import ModelWrapper
-from utils.config import get_config, tickers, ALL_COLS
+from alpaca_strategy.env import DATA_KEY, DATA_SECRET, TRADE_KEY, TRADE_SECRET, DEBUG
+from alpaca_strategy.config import get_config
 cfg = get_config()
-from utils.data_utils import smart_fill_features, add_minute_norm, trades_to_min, floor_minute
+from alpaca_strategy.data.data_utils import smart_fill_features, add_minute_norm, trades_to_min, floor_minute
 import pandas_market_calendars as mcal
-from utils.trading import nyc_now, smart_position_management, liquidate_all_positions, wait_until, get_next_market_session
+from alpaca_strategy.trading.trading import nyc_now, smart_position_management, liquidate_all_positions, wait_until, get_next_market_session
 from scripts.fetch_trade_data import process_symbols, setup_config
 from scripts.train import train_model
+from alpaca_strategy.model.lit_module import ModelWrapper
+
+# Global model variable
+model = None
 
 PAPER = True
-SYMBOLS: List[str] = tickers
+SYMBOLS: List[str] = cfg.tickers
 SEQ_LEN = cfg.seq_len
 CHECKPOINT_PATH = "results/micro-graph-v2/rb2pidc4/checkpoints/epoch-epoch=0.ckpt"
 TOP_K = 3
@@ -68,6 +66,12 @@ TOTAL_TRADES_RECEIVED = 0
 LAST_TRADE_TIME = datetime.now()
 STREAM_START_TIME = datetime.now()
 
+def load_model():
+    global model
+    model = ModelWrapper(CHECKPOINT_PATH, device="cpu")
+    print("Model loaded.")
+
+
 def get_previous_trading_day() -> datetime:
     nyse = mcal.get_calendar("NYSE")
     today = datetime.now().date()
@@ -85,7 +89,7 @@ def build_window_df(sym: str) -> pd.DataFrame:
     df = add_minute_norm(df)
     
     # Ensure all required columns are present
-    for col in ALL_COLS:
+    for col in cfg.ALL_COLS:
         if col not in df.columns:
             df[col] = 0.0
     
@@ -141,18 +145,6 @@ def check_and_trade():
             reverse=True,
         )
         top_syms = [s for s, _ in ranked[:TOP_K]]
-        market_open, market_close = get_today_market_open_close()
-        if market_open is None or market_close is None:
-            print("Market closed today. No trading.")
-            return
-        now = nyc_now()
-        if now < market_open:
-            print("Market not open yet. No trading.")
-            return
-        if now >= market_close - timedelta(minutes=10):
-            print("Less than 10 minutes to market close. Liquidating all positions.")
-            liquidate_all_positions(trading_client)
-            return
         LAST_DECISION_TIME = now
         candidates: List[str] = []
         cooldown_filtered: List[str] = []
@@ -339,10 +331,10 @@ async def populate_historical_buffer():
     seq_len = cfg.seq_len
 
     # Update all symbols up to the previous day using 'update' mode
-    process_symbols(tickers, data_dir=data_dir, mode='update')
+    process_symbols(cfg.tickers, data_dir=data_dir, mode='update')
 
     # Now load the last SEQ_LEN bars for each symbol into BAR_BUFFERS
-    for symbol in tickers:
+    for symbol in cfg.tickers:
         file_path = pathlib.Path(data_dir) / f"{symbol}_1min.parquet"
         if not file_path.exists():
             print(f"{symbol}: Parquet file not found after update.")
@@ -367,7 +359,7 @@ def run_market_data_stream():
     import websockets
     from datetime import datetime, timedelta
     
-    market_open, market_close = get_today_market_open_close()
+    market_open, market_close = get_next_market_session()
     print(f"Market open! Trading until {market_close - timedelta(minutes=10)}.")
     try:
         async def start_raw_stream():
@@ -442,19 +434,19 @@ def main():
                 time.sleep(12 * 3600)
             continue
         # Now in a valid session window
-        model = ModelWrapper(CHECKPOINT_PATH, device="cpu")
+        load_model()
         print("Market open and not near close. Proceeding with trading session logic...")
         print("Market open! Liquidating all positions to ensure no carryover...")
         liquidate_all_positions(trading_client)
         print("All positions liquidated. Running pre-market data update...")
-        process_symbols(tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
+        process_symbols(cfg.tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
         print("Pre-market process_symbols done. Populating historical buffer...")
         asyncio.run(populate_historical_buffer())
         print("Historical buffer populated. Starting trading stream...")
         run_market_data_stream()
         print("Trading session ended. Will wait for next open.")
         wait_until(market_close + timedelta(minutes=10))
-        process_symbols(tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
+        process_symbols(cfg.tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
         train_model_with_new_data()
 
 

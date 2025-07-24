@@ -1,18 +1,14 @@
 import pathlib
 import pandas as pd
 from datetime import datetime, timedelta
-import sys
-import os
 from tqdm import tqdm
 import urllib.parse
 import pytz
 
-# Add project root to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
 
-from utils.data_utils import smart_fill_features, align_to_nyse_timeline, floor_minute, trades_to_min, fetch_pages, setup_config
-from utils.config import tickers
+from alpaca_strategy.data.data_utils import smart_fill_features, align_to_nyse_timeline, floor_minute, trades_to_min, fetch_pages, setup_config
+from alpaca_strategy.config import get_config
+cfg = get_config()
 
 def fetch_symbol_data(symbol, config, start_dt=None, end_dt=None):
     """Fetch and process trade data for a single symbol, optionally for a specific minute-level scope."""
@@ -157,4 +153,4 @@ def process_symbols(symbols, data_dir='data', mode='normal', start_dt=None, end_
 
 if __name__ == "__main__":
     config = setup_config()
-    process_symbols(tickers, start_dt=datetime(2025, 1, 2), mode='update')
+    process_symbols(cfg.tickers, start_dt=datetime(2025, 1, 2), mode='update')

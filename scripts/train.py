@@ -8,21 +8,15 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-import sys
-import os
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import torch
 
-# Add project root to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
-
-from utils.config import get_config
+from alpaca_strategy.config import get_config
 cfg = get_config()
-from utils.data_module import AllSymbolsDataModule
-from utils.callbacks import default_callbacks
-from model.lit_module import Lit
+from alpaca_strategy.data.data_module import AllSymbolsDataModule
+from alpaca_strategy.callbacks import default_callbacks
+from alpaca_strategy.model.lit_module import Lit
 
 
 def parse_args():
@@ -46,10 +40,10 @@ def train_model(checkpoint_path=None, max_epochs=None, log_wandb=None, start_tim
     """
     import pytorch_lightning as pl
     from pytorch_lightning.loggers import WandbLogger
-    from utils.config import get_config
-    from utils.data_module import AllSymbolsDataModule
-    from utils.callbacks import default_callbacks
-    from model.lit_module import Lit
+    from alpaca_strategy.config import get_config
+    from alpaca_strategy.data.data_module import AllSymbolsDataModule
+    from alpaca_strategy.callbacks import default_callbacks
+    from alpaca_strategy.model.lit_module import Lit
     import torch
 
     if torch.cuda.is_available():

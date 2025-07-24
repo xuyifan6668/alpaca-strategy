@@ -1,8 +1,9 @@
 import pathlib
 import pandas as pd
-from utils.config import tickers
+from alpaca_strategy.config import get_config
+cfg = get_config()
 
-SYMBOLS = tickers
+SYMBOLS = cfg.tickers
 TARGET_DATE = "2025-07-24"
 DATA_DIR = "data"
 

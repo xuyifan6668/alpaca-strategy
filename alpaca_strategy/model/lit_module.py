@@ -7,10 +7,10 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import OneCycleLR
 import pytorch_lightning as pl
 
-from utils.utils_ranking import spearman_loss
-from utils.metrics import compute_metrics
-from model.models_encoder import Encoder
-from utils.config import get_config
+from alpaca_strategy.utils_ranking import spearman_loss
+from alpaca_strategy.metrics import compute_metrics
+from alpaca_strategy.model.models_encoder import Encoder
+from alpaca_strategy.config import get_config
 cfg = get_config()
 
 # ---------------------------------------------------------------------------

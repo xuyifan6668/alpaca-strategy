@@ -1,21 +1,13 @@
 import pathlib
-import sys
 import os
-from multiprocessing import Pool, cpu_count
-from functools import partial
-
-# Add project root to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
 
 import backtrader as bt
 import pandas as pd
 import torch
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 import quantstats as qs
-from model.lit_module import Lit
-from utils.config import get_config
+from alpaca_strategy.model.lit_module import Lit
+from alpaca_strategy.config import get_config
 cfg = get_config()
 
 CHECKPOINT_PATH = "results/micro-graph-v2/rb2pidc4/checkpoints/epoch-epoch=0.ckpt"

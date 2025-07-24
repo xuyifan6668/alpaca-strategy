@@ -1,10 +1,11 @@
 import pathlib
 import pandas as pd
-from utils.config import tickers
+from alpaca_strategy.config import get_config
+cfg = get_config()
 
 def check_data_for_date(target_date: str = "2025-07-23", data_dir: str = "data"):
     found_any = False
-    for symbol in tickers:
+    for symbol in cfg.tickers:
         file_path = pathlib.Path(data_dir) / f"{symbol}_1min.parquet"
         if not file_path.exists():
             print(f"{symbol}: Parquet file not found.")

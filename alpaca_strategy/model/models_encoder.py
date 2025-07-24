@@ -14,7 +14,7 @@ import torch.nn as nn
 # inject their own configuration for easier testing and hyper-parameter
 # sweeps.
 
-from utils.config import get_config, FEAT_DIM, MINUTE_IDX
+from alpaca_strategy.config import get_config, FEAT_DIM, MINUTE_IDX
 cfg = get_config()
 
 # ---------------------------------------------------------------------------

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from utils.config import get_config
-cfg = get_config()
+from alpaca_strategy.config import Config, get_config
 
 
-def default_callbacks(conf: cfg.__class__ = cfg):
+def default_callbacks(conf: Config = None):
     """Return a list of callbacks with sensible defaults derived from *conf*."""
+    if conf is None:
+        conf = get_config()
     # Main checkpoint callback - saves best models based on validation loss
     ckpt_cb = ModelCheckpoint(
         monitor="val_loss",

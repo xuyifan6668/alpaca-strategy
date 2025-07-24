@@ -6,7 +6,7 @@ import os
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
-from utils.env import DEBUG
+from alpaca_strategy.env import DEBUG
 import pandas_market_calendars as mcal
 from datetime import timedelta
 
