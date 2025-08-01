@@ -1,4 +1,11 @@
 import pathlib
+import sys
+import os
+
+# Add the project root to Python path so we can import alpaca_strategy
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
 import pandas as pd
 from datetime import datetime, timedelta
 from tqdm import tqdm
@@ -132,11 +139,7 @@ def process_symbols(symbols, data_dir='data', mode='normal', start_dt=None, end_
                 continue
             bars = fetch_symbol_data(symbol, config, start_dt=fetch_start, end_dt=end_dt)
             if not bars.empty:
-                print("bars", bars.shape)
-                print("fetch_start", fetch_start)
-                print("end_dt", end_dt)
                 bars = align_to_nyse_timeline(bars, fetch_start, end_dt, verbose=False)
-                print("bars", bars.shape)
                 combined = pd.concat([old_df, bars], ignore_index=True)
                 combined = combined.drop_duplicates(subset=['timestamp'])
                 if not combined.empty:
@@ -153,4 +156,4 @@ def process_symbols(symbols, data_dir='data', mode='normal', start_dt=None, end_
 
 if __name__ == "__main__":
     config = setup_config()
-    process_symbols(cfg.tickers, start_dt=datetime(2025, 1, 2), mode='update')
+    process_symbols(cfg.tickers, start_dt=datetime(2024, 1, 2), mode='rewrite')

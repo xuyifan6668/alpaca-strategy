@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import pathlib
 from typing import Dict
-
+import torch
 import pandas as pd
+import numpy as np
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset, DataLoader, Subset
 import pytorch_lightning as pl
 
-from utils.config import get_config, ALL_COLS, FEAT_DIM, DEFAULT_UNIVERSE
+from alpaca_strategy.config import get_config, DEFAULT_UNIVERSE
 cfg = get_config()
-from utils.label_generator import DEFAULT_LABEL_GEN, TopKBinaryLabelGenerator
-from utils.data_utils import add_minute_norm
+from alpaca_strategy.data.label_generator import DEFAULT_LABEL_GEN, TopKBinaryLabelGenerator
+from alpaca_strategy.data.data_utils import add_minute_norm
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -44,14 +45,6 @@ class WindowDataset(Dataset):
             for sym in self.symbols
         ], axis=0)
         arr_labels = self.label_generator(close_matrix, self.seq_len, self.horizon)  # shape (nw, S)
-
-        positive_counts = arr_labels.sum(axis=0)  # shape: (num_symbols,)
-        total_counts = arr_labels.shape[0]
-        positive_rate = positive_counts / total_counts
-        print("Label distribution per symbol (top-k positives):")
-        for sym, pos, rate in zip(self.symbols, positive_counts, positive_rate):
-            print(f"  {sym}: {int(pos)} positives, {rate:.4f} positive rate")
-
         valid_mask = ~np.isnan(arr_labels).any(axis=1)
         self.valid_idx = np.nonzero(valid_mask)[0]
         arr_labels = arr_labels[valid_mask]
@@ -68,11 +61,11 @@ class WindowDataset(Dataset):
 
     def __getitem__(self, idx):
         orig_idx = int(self.valid_idx[idx])
-        X = np.zeros((self.S, self.seq_len, FEAT_DIM), dtype=np.float32)
+        X = np.zeros((self.S, self.seq_len, cfg.FEAT_DIM), dtype=np.float32)
         for sid, sym in enumerate(self.symbols):
             win = self.stock_dfs[sym].iloc[orig_idx : orig_idx + self.seq_len]
             win = add_minute_norm(win)
-            feat = win[ALL_COLS].values
+            feat = win[cfg.ALL_COLS].values
             X[sid] = self.scalers[sym].transform(feat)
         return torch.tensor(X), self.labels[idx]
 
@@ -146,7 +139,7 @@ class AllSymbolsDataModule(pl.LightningDataModule):
         for s, df in self.stock_dfs.items():
             df_with_norm = add_minute_norm(df)
             self.stock_dfs[s] = df_with_norm
-            train_data = df_with_norm.iloc[: last_train_row + 1][ALL_COLS].values if last_train_row > 0 else df_with_norm[ALL_COLS].values
+            train_data = df_with_norm.iloc[: last_train_row + 1][cfg.ALL_COLS].values if last_train_row > 0 else df_with_norm[cfg.ALL_COLS].values
             scaler = StandardScaler().fit(train_data)
             self.scalers[s] = scaler
         self.global_scaler = next(iter(self.scalers.values()))

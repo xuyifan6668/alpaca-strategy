@@ -76,21 +76,22 @@ class Lit(pl.LightningModule):
 
     # ----------------------- shared step ----------------------------------
     def _step(self, batch, stage: str):
-        X, y_raw = batch  # y_raw: (B, S)
-        logits = self.net(X)  # logits: (B, S)
+        X, y_raw = batch                    # y_raw: [B, S] future returns
+        pred = self.net(X)                 # logits → predicted returns
 
-        loss = F.binary_cross_entropy_with_logits(logits, y_raw)
+        loss = F.mse_loss(pred, y_raw)
 
-        # Top-k accuracy calculation
-        k = getattr(self.trainer.datamodule.train_ds.dataset, 'top_k', 3) if hasattr(self.trainer, 'datamodule') else 3
-        with torch.no_grad():
-            pred_topk = torch.topk(logits, k=k, dim=1).indices  # (B, k)
-            true_topk = torch.topk(y_raw, k=k, dim=1).indices   # (B, k)
-            # For each sample, count how many predicted top k are in true top k
-            match = (pred_topk.unsqueeze(2) == true_topk.unsqueeze(1)).any(2).float().mean()
-            self.log(f"{stage}_top{k}_acc", match, prog_bar=True)
+        # Optional IC logging (correlation between predicted and actual returns)
+        ic_vals = []
+        for i in range(y_raw.size(0)):
+            if y_raw[i].std() > 1e-8:
+                ic_vals.append(torch.corrcoef(torch.stack([pred[i], y_raw[i]]))[0, 1])
+        ic = torch.stack(ic_vals).mean() if ic_vals else torch.tensor(0.0, device=self.device)
 
         self.log(f"{stage}_loss", loss, prog_bar=(stage != "train"))
+        self.log(f"{stage}_ic", ic, prog_bar=True)
+        self.log(f"{stage}_logit_mean", pred.mean())
+        self.log(f"{stage}_logit_std", pred.std())
         return loss
 
     # ---------------- Lightning hooks -------------------------------------
@@ -105,7 +106,7 @@ class Lit(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         X, _ = batch
-        return torch.sigmoid(self.net(X)).cpu().numpy() 
+        return self.net(X).cpu().numpy()  # skip sigmoid; keep raw return predictions
     
     def on_save_checkpoint(self, checkpoint):
         """Save scalers in the checkpoint."""

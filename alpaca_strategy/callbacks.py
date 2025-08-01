@@ -16,18 +16,10 @@ def default_callbacks(conf: Config = None):
         mode="min",
         filename="best-epoch{epoch}-val{val_loss:.4f}",
         save_last=True,
-        save_top_k=3,  # Save top 3 models based on val_loss
-        every_n_epochs=1,  # Save every epoch
-        save_on_train_epoch_end=True,  # Save at the end of each training epoch
+        save_top_k=1,  # Save top 3 models based on val_loss
+        save_on_train_epoch_end=False,  # Save at the end of each training epoch
     )
     
-    # Additional callback to save every epoch with simple naming
-    every_epoch_cb = ModelCheckpoint(
-        filename="epoch-{epoch}",
-        every_n_epochs=1,
-        save_on_train_epoch_end=True,
-        save_top_k=-1,  # Save all epochs
-    )
     
     es_cb = EarlyStopping(monitor="val_loss", patience=conf.patience, mode="min")
-    return [ckpt_cb, every_epoch_cb, es_cb] 
+    return [ckpt_cb, es_cb] 

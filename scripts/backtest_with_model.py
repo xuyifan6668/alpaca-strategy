@@ -1,5 +1,10 @@
 import pathlib
 import os
+import sys
+
+# Add the project root to Python path so we can import alpaca_strategy
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 import backtrader as bt
 import pandas as pd

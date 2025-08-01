@@ -17,7 +17,7 @@ from typing import List, Dict, Any
 from pandas_market_calendars import date_range, get_calendar
 from tqdm import tqdm
 from datetime import datetime
-from utils.env import DATA_KEY, DATA_SECRET
+from alpaca_strategy.env import DATA_KEY, DATA_SECRET
 import pathlib
 import pandas as pd
 from datetime import datetime, timedelta

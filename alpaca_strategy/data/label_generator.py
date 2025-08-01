@@ -32,6 +32,7 @@ class LogReturnLabelGenerator:
 
     # ------------------------------------------------------------------
     def __call__(self, close: np.ndarray, seq_len: int, horizon: int) -> np.ndarray:  # type: ignore[override]
+        close = np.squeeze(close)
         nw = len(close) - seq_len - horizon
         out = np.zeros(nw, dtype=np.float32)
         for i in range(nw):
@@ -91,4 +92,4 @@ class TopKBinaryLabelGenerator:
         return labels
 
 
-DEFAULT_LABEL_GEN = TopKBinaryLabelGenerator() 
+DEFAULT_LABEL_GEN = LogReturnLabelGenerator() 

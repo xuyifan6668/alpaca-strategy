@@ -39,7 +39,7 @@ class Config:
     tickers: List[str] = field(default_factory=lambda: [
         "TSLA", "RIVN", "F", "GM",
         "NVDA", "AMD", "META", "CRM", "INTC", "GOOGL", "MSFT", "AAPL", "NFLX",
-        "PYPL", "SQ",
+        "PYPL", 
         "MPC", "DVN", "OXY", "APA", "HAL",
         "REGN", "VRTX", "BIIB", "LLY", "MRNA",
         "ROST", "BBWI", "TPR", "ULTA", "ETSY"
@@ -66,6 +66,12 @@ class Config:
     @property
     def MINUTE_IDX(self):
         return self.ALL_COLS.index("minute_norm")
+    @property
+    def VOLUME_IDX(self):
+        return self.ALL_COLS.index("volume")
+    @property
+    def STD_IDX(self):
+        return self.ALL_COLS.index("std")
 
 
 def get_config(**overrides) -> Config:
