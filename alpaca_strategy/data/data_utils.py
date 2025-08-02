@@ -17,25 +17,11 @@ from typing import List, Dict, Any
 from pandas_market_calendars import date_range, get_calendar
 from tqdm import tqdm
 from datetime import datetime
-from utils.env import DATA_KEY, DATA_SECRET
+from alpaca_strategy.env import DATA_KEY, DATA_SECRET
+import pathlib
+import pandas as pd
+from datetime import datetime, timedelta
 
-def load_failed_symbols(failed_file_path):
-    """Load stock symbols from failed symbols file"""
-    symbols = []
-    try:
-        with open(failed_file_path, "r") as f:
-            lines = f.readlines()
-        
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                symbols.append(line)
-        
-        return symbols
-    except FileNotFoundError:
-        return []
-    except Exception as e:
-        return []
 
 def get_sp500_symbols():
     """Fetch S&P 500 symbols from Wikipedia"""
@@ -52,7 +38,7 @@ def setup_config():
         },
         'base_url': "https://data.alpaca.markets/v2/stocks",
         'start_iso': "2025-01-02",
-        'end_iso': "2025-07-18",
+        'end_iso': "2025-07-23",
         'limit': 10_000,
         'feed_ticks': "iex",
         'out_dir': pathlib.Path("data")
@@ -117,163 +103,143 @@ def trades_to_min(tr):
     if tr.empty or not all(col in tr.columns for col in ['t', 'p', 's', 'c']):
         return pd.DataFrame() # Return empty DataFrame if essential columns are missing
     
-    with tqdm(desc="Processing trades", total=10, leave=False) as pbar:
-        pbar.set_description("Creating basic trade features")
-        # Basic derived columns
-        tr["dollar_value"] = tr["p"] * tr["s"]
-        tr["cond_is_regular"] = tr["c"].apply(lambda x: int("@" in x))
-        tr["odd_lot"] = tr["c"].apply(lambda x: int("I" in x))
-        
-        # Size classification
-        def bucket_size(x):
-            if x < 100:  return "tiny"
-            if x < 500:  return "small"
-            if x < 2000: return "mid"
-            return "large"
-        tr["size_bucket"] = tr["s"].map(bucket_size)
-        pbar.update(1)
-        
-        pbar.set_description("Implementing tick rule & order flow")
-        # Advanced Feature 1: Tick Rule (Lee-Ready Algorithm)
-        # Classify trades as buy (+1) or sell (-1) based on price movement
-        tr["price_change"] = tr.groupby("symbol")["p"].diff()
-        tr["tick_rule"] = np.where(tr["price_change"] > 0, 1,
-                         np.where(tr["price_change"] < 0, -1, 0))
-        
-        # Forward-fill undetermined trades with previous classification
-        tr["tick_rule"] = tr.groupby("symbol")["tick_rule"].ffill().fillna(0)
-        
-        # Order flow imbalance (buy volume - sell volume)
-        tr["signed_volume"] = tr["tick_rule"] * tr["s"]
-        tr["signed_dollar_volume"] = tr["tick_rule"] * tr["dollar_value"]
-        pbar.update(1)
-        
-        pbar.set_description("Calculating price impact measures")
-        # Advanced Feature 2: Kyle's Lambda (Price Impact)
-        # Measures how much prices move per unit of order flow
-        tr["abs_price_change"] = tr["price_change"].abs()
-        tr["kyle_lambda_numerator"] = tr["abs_price_change"] * tr["s"]
-        pbar.update(1)
-        
-        pbar.set_description("Computing price acceleration features")
-        # Advanced Feature 3: Price Acceleration & Trade Clustering
-        tr["lag_price"] = tr.groupby("symbol")["p"].shift(1)
-        tr["lag2_price"] = tr.groupby("symbol")["p"].shift(2)
-        
-        # Price acceleration (second derivative)
-        tr["price_acceleration"] = tr["p"] - 2*tr["lag_price"] + tr["lag2_price"]
-        
-        # Trade clustering: consecutive trades in same direction
-        tr["consecutive_direction"] = (tr["tick_rule"] == tr.groupby("symbol")["tick_rule"].shift(1)).astype(int)
-        
-        # Volume-weighted price momentum
-        tr["volume_weighted_momentum"] = tr["tick_rule"] * tr["s"] * tr["price_change"].fillna(0)
-        pbar.update(1)
-        
-        pbar.set_description("Aggregating price data")
-        # Price aggregation - preserve OHLC data
-        minute_price = (
-            tr.groupby(["symbol","timestamp"])["p"]
-              .agg(open="first", close="last", high="max", low="min",
-                   mean="mean", std="std")
-        )
-        pbar.update(1)
-        
-        pbar.set_description("Aggregating advanced microstructure features")
-        # Advanced aggregations
-        minute_advanced = (
-            tr.groupby(["symbol","timestamp"])
-              .agg(
-                  # Basic aggregations
-                  trade_count=("p","count"),
-                  volume=("s","sum"),
-                  dollar_volume=("dollar_value","sum"),
-                  cond_is_regular=("cond_is_regular","sum"),
-                  odd_lot_count=("odd_lot","sum"),
-                  
-                  # Order flow features
-                  buy_volume=("signed_volume", lambda x: x[x > 0].sum()),
-                  sell_volume=("signed_volume", lambda x: -x[x < 0].sum()),
-                  order_flow_imbalance=("signed_volume", "sum"),
-                  dollar_order_flow_imbalance=("signed_dollar_volume", "sum"),
-                  
-                  # Price impact & acceleration measures
-                  kyle_lambda=("kyle_lambda_numerator", "sum"),
-                  avg_price_acceleration=("price_acceleration", "mean"),
-                  price_acceleration_std=("price_acceleration", "std"),
-                  consecutive_trades_ratio=("consecutive_direction", "mean"),
-                  volume_weighted_momentum=("volume_weighted_momentum", "sum"),
-                  
-                  # Trade characteristics
-                  avg_trade_size=("s", "mean"),
-                  trade_size_std=("s", "std"),
-                  max_trade_size=("s", "max"),
-                  
-                  # Aggressiveness measures
-                  buy_trade_count=("tick_rule", lambda x: (x > 0).sum()),
-                  sell_trade_count=("tick_rule", lambda x: (x < 0).sum()),
-              )
-        )
-        pbar.update(1)
-        
-        pbar.set_description("Calculating time intervals")
-        # Inter-trade time intervals
-        tr["t_original"] = pd.to_datetime(tr["t"], format='ISO8601', utc=True)
-        tr["delta_ms"] = tr.groupby("symbol")["t_original"].diff().dt.total_seconds()*1e3
-        inter_ms = (tr.groupby(["symbol","timestamp"])["delta_ms"]
-                      .agg(intertrade_ms_mean="mean",
-                           intertrade_ms_std="std",
-                           intertrade_ms_min="min",
-                           intertrade_ms_max="max").fillna(0))
-        pbar.update(1)
-        
-        pbar.set_description("Creating size bucket features")
-        # Size-bucket one-hot encoding
-        bucket = (tr.pivot_table(index=["symbol","timestamp"],
-                                 columns="size_bucket", values="s",
-                                 aggfunc="count").fillna(0)
-                    .add_prefix("cnt_"))
-        pbar.update(1)
-        
-        pbar.set_description("Computing final microstructure features")
-        # Merge all features
-        tm = (minute_price.join(minute_advanced)
-              .join(inter_ms)
-              .join(bucket)
-              .reset_index())
-        
-        # Calculate VWAP
-        tm["vwap"] = tm["dollar_volume"] / tm["volume"].replace(0, np.nan)
-        
-        # Advanced Feature 4: Order Flow Imbalance Ratio
-        tm["order_flow_ratio"] = tm["order_flow_imbalance"] / tm["volume"].replace(0, np.nan)
-        tm["dollar_order_flow_ratio"] = tm["dollar_order_flow_imbalance"] / tm["dollar_volume"].replace(0, np.nan)
-        
-        # Advanced Feature 5: Buy/Sell Pressure
-        tm["buy_sell_ratio"] = (tm["buy_volume"] / tm["sell_volume"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
-        tm["trade_direction_ratio"] = (tm["buy_trade_count"] - tm["sell_trade_count"]) / tm["trade_count"].replace(0, np.nan)
-        
-        # Advanced Feature 6: Price Impact per Dollar (Kyle's Lambda normalized)
-        tm["price_impact_per_dollar"] = tm["kyle_lambda"] / tm["dollar_volume"].replace(0, np.nan)
-        
-        # Advanced Feature 7: Volatility and momentum features
-        tm["trade_return"] = tm.groupby("symbol")["close"].pct_change()
-        tm["volatility_proxy"] = tm["std"] / tm["mean"].replace(0, np.nan)  # Coefficient of variation
-        tm["price_range"] = (tm["high"] - tm["low"]) / tm["open"].replace(0, np.nan)
-        tm["mid_bar_pos"] = (tm["close"]-tm["low"])/(tm["high"]-tm["low"]).replace(0,np.nan)
-        
-        # Advanced Feature 8: Liquidity measures
-        tm["turnover_rate"] = tm["volume"] / tm["avg_trade_size"].replace(0, np.nan)  # How many "typical" trades occurred
-        tm["trade_intensity"] = tm["trade_count"] / (tm["intertrade_ms_mean"].replace(0, np.nan) / 1000)  # Trades per second
-        
-        # Advanced Feature 9: Roll's implicit spread estimate
-        # Roll's measure: 2 * sqrt(-Cov(r_t, r_{t-1})) where r_t is returns
-        tm["roll_spread_proxy"] = np.abs(tm["trade_return"] * tm.groupby("symbol")["trade_return"].shift(1))
-        
-        # Advanced Feature 10: Short-term reversal measure
-        tm["price_reversal"] = (tm["close"] - tm["open"]) * (tm.groupby("symbol")["close"].shift(1) - tm.groupby("symbol")["open"].shift(1))
-        
-        pbar.update(1)
+    # Basic derived columns
+    tr["dollar_value"] = tr["p"] * tr["s"]
+    tr["cond_is_regular"] = tr["c"].apply(lambda x: int("@" in x))
+    tr["odd_lot"] = tr["c"].apply(lambda x: int("I" in x))
+    
+    # Size classification
+    def bucket_size(x):
+        if x < 100:  return "tiny"
+        if x < 500:  return "small"
+        if x < 2000: return "mid"
+        return "large"
+    tr["size_bucket"] = tr["s"].map(bucket_size)
+    
+    # Advanced Feature 1: Tick Rule (Lee-Ready Algorithm)
+    # Classify trades as buy (+1) or sell (-1) based on price movement
+    tr["price_change"] = tr.groupby("symbol")["p"].diff()
+    tr["tick_rule"] = np.where(tr["price_change"] > 0, 1,
+                     np.where(tr["price_change"] < 0, -1, 0))
+    
+    # Forward-fill undetermined trades with previous classification
+    tr["tick_rule"] = tr.groupby("symbol")["tick_rule"].ffill().fillna(0)
+    
+    # Order flow imbalance (buy volume - sell volume)
+    tr["signed_volume"] = tr["tick_rule"] * tr["s"]
+    tr["signed_dollar_volume"] = tr["tick_rule"] * tr["dollar_value"]
+    
+    # Advanced Feature 2: Kyle's Lambda (Price Impact)
+    # Measures how much prices move per unit of order flow
+    tr["abs_price_change"] = tr["price_change"].abs()
+    tr["kyle_lambda_numerator"] = tr["abs_price_change"] * tr["s"]
+    
+    # Advanced Feature 3: Price Acceleration & Trade Clustering
+    tr["lag_price"] = tr.groupby("symbol")["p"].shift(1)
+    tr["lag2_price"] = tr.groupby("symbol")["p"].shift(2)
+    
+    # Price acceleration (second derivative)
+    tr["price_acceleration"] = tr["p"] - 2*tr["lag_price"] + tr["lag2_price"]
+    
+    # Trade clustering: consecutive trades in same direction
+    tr["consecutive_direction"] = (tr["tick_rule"] == tr.groupby("symbol")["tick_rule"].shift(1)).astype(int)
+    
+    # Volume-weighted price momentum
+    tr["volume_weighted_momentum"] = tr["tick_rule"] * tr["s"] * tr["price_change"].fillna(0)
+    
+    # Price aggregation - preserve OHLC data
+    minute_price = (
+        tr.groupby(["symbol","timestamp"])["p"]
+          .agg(open="first", close="last", high="max", low="min",
+               mean="mean", std="std")
+    )
+    
+    # Advanced aggregations
+    minute_advanced = (
+        tr.groupby(["symbol","timestamp"])
+          .agg(
+              # Basic aggregations
+              trade_count=("p","count"),
+              volume=("s","sum"),
+              dollar_volume=("dollar_value","sum"),
+              cond_is_regular=("cond_is_regular","sum"),
+              odd_lot_count=("odd_lot","sum"),
+              
+              # Order flow features
+              buy_volume=("signed_volume", lambda x: x[x > 0].sum()),
+              sell_volume=("signed_volume", lambda x: -x[x < 0].sum()),
+              order_flow_imbalance=("signed_volume", "sum"),
+              dollar_order_flow_imbalance=("signed_dollar_volume", "sum"),
+              
+              # Price impact & acceleration measures
+              kyle_lambda=("kyle_lambda_numerator", "sum"),
+              avg_price_acceleration=("price_acceleration", "mean"),
+              price_acceleration_std=("price_acceleration", "std"),
+              consecutive_trades_ratio=("consecutive_direction", "mean"),
+              volume_weighted_momentum=("volume_weighted_momentum", "sum"),
+              
+              # Trade characteristics
+              avg_trade_size=("s", "mean"),
+              trade_size_std=("s", "std"),
+              max_trade_size=("s", "max"),
+              
+              # Aggressiveness measures
+              buy_trade_count=("tick_rule", lambda x: (x > 0).sum()),
+              sell_trade_count=("tick_rule", lambda x: (x < 0).sum()),
+          )
+    )
+    
+    # Inter-trade time intervals
+    tr["t_original"] = pd.to_datetime(tr["t"], format='ISO8601', utc=True)
+    tr["delta_ms"] = tr.groupby("symbol")["t_original"].diff().dt.total_seconds()*1e3
+    inter_ms = (tr.groupby(["symbol","timestamp"])["delta_ms"]
+                  .agg(intertrade_ms_mean="mean",
+                       intertrade_ms_std="std",
+                       intertrade_ms_min="min",
+                       intertrade_ms_max="max").fillna(0))
+    
+    # Size-bucket one-hot encoding
+    bucket = (tr.pivot_table(index=["symbol","timestamp"],
+                             columns="size_bucket", values="s",
+                             aggfunc="count").fillna(0)
+                .add_prefix("cnt_"))
+    
+    # Merge all features
+    tm = (minute_price.join(minute_advanced)
+          .join(inter_ms)
+          .join(bucket)
+          .reset_index())
+    
+    # Calculate VWAP
+    tm["vwap"] = tm["dollar_volume"] / tm["volume"].replace(0, np.nan)
+    
+    # Advanced Feature 4: Order Flow Imbalance Ratio
+    tm["order_flow_ratio"] = tm["order_flow_imbalance"] / tm["volume"].replace(0, np.nan)
+    tm["dollar_order_flow_ratio"] = tm["dollar_order_flow_imbalance"] / tm["dollar_volume"].replace(0, np.nan)
+    
+    # Advanced Feature 5: Buy/Sell Pressure
+    tm["buy_sell_ratio"] = (tm["buy_volume"] / tm["sell_volume"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+    tm["trade_direction_ratio"] = (tm["buy_trade_count"] - tm["sell_trade_count"]) / tm["trade_count"].replace(0, np.nan)
+    
+    # Advanced Feature 6: Price Impact per Dollar (Kyle's Lambda normalized)
+    tm["price_impact_per_dollar"] = tm["kyle_lambda"] / tm["dollar_volume"].replace(0, np.nan)
+    
+    # Advanced Feature 7: Volatility and momentum features
+    tm["trade_return"] = tm.groupby("symbol")["close"].pct_change()
+    tm["volatility_proxy"] = tm["std"] / tm["mean"].replace(0, np.nan)  # Coefficient of variation
+    tm["price_range"] = (tm["high"] - tm["low"]) / tm["open"].replace(0, np.nan)
+    tm["mid_bar_pos"] = (tm["close"]-tm["low"])/(tm["high"]-tm["low"]).replace(0,np.nan)
+    
+    # Advanced Feature 8: Liquidity measures
+    tm["turnover_rate"] = tm["volume"] / tm["avg_trade_size"].replace(0, np.nan)  # How many "typical" trades occurred
+    tm["trade_intensity"] = tm["trade_count"] / (tm["intertrade_ms_mean"].replace(0, np.nan) / 1000)  # Trades per second
+    
+    # Advanced Feature 9: Roll's implicit spread estimate
+    # Roll's measure: 2 * sqrt(-Cov(r_t, r_{t-1})) where r_t is returns
+    tm["roll_spread_proxy"] = np.abs(tm["trade_return"] * tm.groupby("symbol")["trade_return"].shift(1))
+    
+    # Advanced Feature 10: Short-term reversal measure
+    tm["price_reversal"] = (tm["close"] - tm["open"]) * (tm.groupby("symbol")["close"].shift(1) - tm.groupby("symbol")["open"].shift(1))
     
     return tm
 
@@ -306,8 +272,7 @@ def smart_fill_features(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame
     feature_categories = {
         'price': {
             'columns': ['open', 'high', 'low', 'close', 'vwap', 'mean',
-                       'trade_return', 'price_range', 'mid_bar_pos', 
-                       'roll_spread_proxy', 'price_reversal'],
+                       'trade_return'],
             'method': 'close_fill',
             'description': 'Price-derived features (fill with last close)'
         },
@@ -316,16 +281,19 @@ def smart_fill_features(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame
                        'odd_lot_count', 'cnt_tiny', 'cnt_small', 'cnt_mid', 'cnt_large',
                        'buy_volume', 'sell_volume', 'order_flow_imbalance', 
                        'dollar_order_flow_imbalance', 'kyle_lambda', 'volume_weighted_momentum',
-                       'buy_trade_count', 'sell_trade_count'],
+                       'buy_trade_count', 'sell_trade_count', 'trade_size_sum'],
             'method': 'zero',
             'description': 'Volume/activity features (fill with 0)'
         },
         'ratios_and_stats': {
-            'columns': ['std', 'avg_price_acceleration', 'price_acceleration_std', 
-                       'consecutive_trades_ratio', 'avg_trade_size', 'trade_size_std', 
-                       'max_trade_size', 'order_flow_ratio', 'dollar_order_flow_ratio',
-                       'buy_sell_ratio', 'trade_direction_ratio', 'price_impact_per_dollar',
-                       'volatility_proxy', 'turnover_rate', 'trade_intensity'],
+            'columns': [
+                'std', 'avg_price_acceleration', 'price_acceleration_std', 
+                'consecutive_trades_ratio', 'avg_trade_size', 'trade_size_std', 
+                'max_trade_size', 'order_flow_ratio', 'dollar_order_flow_ratio',
+                'buy_sell_ratio', 'trade_direction_ratio', 'price_impact_per_dollar',
+                'volatility_proxy', 'turnover_rate', 'trade_intensity',
+                'price_range', 'mid_bar_pos', 'roll_spread_proxy', 'price_reversal'
+            ],
             'method': 'zero',
             'description': 'Ratios and statistical measures (fill with 0)'
         },
@@ -388,48 +356,24 @@ def add_minute_norm(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def align_to_nyse_timeline(df: pd.DataFrame, start_date: str, end_date: str, verbose: bool = False) -> pd.DataFrame:
-    """
-    Align DataFrame to complete NYSE trading timeline for specified date range.
-    
-    This function:
-    1. Creates a canonical NYSE trading minute timeline for the specified period
-    2. Aligns the data to this complete timeline using reindex
-    3. Converts timestamps to proper UTC timezone-naive format
-    
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame with 'timestamp' column
-    start_date : str
-        Start date in ISO format (e.g., "2025-01-02")
-    end_date : str
-        End date in ISO format (e.g., "2025-07-01")
-    verbose : bool, default False
-        If True, print alignment statistics
-        
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame aligned to complete NYSE trading timeline
-    """
-    if df.empty or 'timestamp' not in df.columns:
+def align_to_nyse_timeline(df, start_time, end_time, verbose=False):
+    if df.empty :
         return df
-    
-    # Create canonical NYSE trading timeline for specified period
     nyse = get_calendar("NYSE")
-    sched = nyse.schedule(start_date=start_date, end_date=end_date)
+    start_date = pd.to_datetime(start_time).tz_localize(None)
+    end_date = pd.to_datetime(end_time).tz_localize(None)
+
+    sched = nyse.schedule(start_date=start_date, end_date=end_date, tz="UTC")
     canon_idx = date_range(sched, frequency="1min", closed="both")
-    canon_idx = canon_idx.tz_convert("UTC").tz_localize(None)
-    
-    # Align data to canonical timeline
+    canon_idx = canon_idx.tz_localize(None)
+    canon_idx = canon_idx[canon_idx >= pd.to_datetime(start_time)]
+    canon_idx = canon_idx[canon_idx <= pd.to_datetime(end_time)]
     aligned_df = (
         df.set_index("timestamp")
           .reindex(canon_idx)
           .reset_index()
           .rename(columns={"index": "timestamp"})
     )
-    
     return aligned_df
 
 
@@ -559,3 +503,33 @@ def apply_smart_fill_to_dict(data_dict: Dict[str, pd.DataFrame], align_stocks: b
         filled_dict[symbol] = filled_df
         
     return filled_dict 
+
+
+def append_bar_to_parquet(symbol: str, bar: dict, data_dir: str = 'data'):
+    """
+    Append a single bar (row) to the symbol's Parquet file in data_dir.
+    If the file does not exist, create it. If it exists, append the row, ensuring no duplicate timestamps.
+    """
+    import pandas as pd
+    import pathlib
+    file_path = pathlib.Path(data_dir) / f"{symbol}_1min.parquet"
+    new_row = pd.DataFrame([bar])
+    if file_path.exists():
+        try:
+            df = pd.read_parquet(file_path)
+            # Avoid duplicate timestamps
+            if 'timestamp' in df.columns and 'timestamp' in new_row.columns:
+                if new_row['timestamp'].iloc[0] in df['timestamp'].values:
+                    return  # Already present, skip
+            df = pd.concat([df, new_row], ignore_index=True)
+            df = df.drop_duplicates(subset=['timestamp'])
+            df.to_parquet(file_path, index=False)
+        except Exception as e:
+            print(f"Error appending to {file_path}: {e}")
+    else:
+        try:
+            new_row.to_parquet(file_path, index=False)
+        except Exception as e:
+            print(f"Error creating {file_path}: {e}") 
+
+

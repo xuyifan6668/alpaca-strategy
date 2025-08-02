@@ -7,10 +7,11 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import OneCycleLR
 import pytorch_lightning as pl
 
-from utils.utils_ranking import spearman_loss
-from utils.metrics import compute_metrics
-from model.models_encoder import Encoder
-from utils.config import cfg
+from alpaca_strategy.utils_ranking import spearman_loss
+from alpaca_strategy.metrics import compute_metrics
+from alpaca_strategy.model.models_encoder import Encoder
+from alpaca_strategy.config import get_config
+cfg = get_config()
 
 # ---------------------------------------------------------------------------
 # LightningModule
@@ -48,6 +49,11 @@ class Lit(pl.LightningModule):
         if scalers is not None:
             self._scalers = scalers  # Store actual scalers
 
+    # ----------------- Forward Method for Model Summary ------------------------------
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass for model summary and inference."""
+        return self.net(x)
+
     # ----------------- Optimiser & Scheduler ------------------------------
     def configure_optimizers(self):
         # AdamW optimiser followed by One-Cycle learning-rate policy
@@ -75,21 +81,32 @@ class Lit(pl.LightningModule):
 
     # ----------------------- shared step ----------------------------------
     def _step(self, batch, stage: str):
-        X, y_raw = batch  # y_raw: (B, S)
-        logits = self.net(X)  # logits: (B, S)
+        X, y_raw = batch                    # y_raw: [B, S] future returns
+        pred = self.net(X)                 # logits → predicted returns
 
-        loss = F.binary_cross_entropy_with_logits(logits, y_raw)
+        loss = F.mse_loss(pred, y_raw)
 
-        # Top-k accuracy calculation
-        k = getattr(self.trainer.datamodule.train_ds.dataset, 'top_k', 3) if hasattr(self.trainer, 'datamodule') else 3
-        with torch.no_grad():
-            pred_topk = torch.topk(logits, k=k, dim=1).indices  # (B, k)
-            true_topk = torch.topk(y_raw, k=k, dim=1).indices   # (B, k)
-            # For each sample, count how many predicted top k are in true top k
-            match = (pred_topk.unsqueeze(2) == true_topk.unsqueeze(1)).any(2).float().mean()
-            self.log(f"{stage}_top{k}_acc", match, prog_bar=True)
+        # Optional IC logging (correlation between predicted and actual returns)
+        ic_vals = []
+        for i in range(y_raw.size(0)):
+            if y_raw[i].std() > 1e-8:
+                ic_vals.append(torch.corrcoef(torch.stack([pred[i], y_raw[i]]))[0, 1])
+        ic = torch.stack(ic_vals).mean() if ic_vals else torch.tensor(0.0, device=self.device)
 
-        self.log(f"{stage}_loss", loss, prog_bar=(stage != "train"))
+        # Enhanced logging with more metrics
+        self.log(f"{stage}_loss", loss, prog_bar=False, sync_dist=True)
+        self.log(f"{stage}_ic", ic, prog_bar=False, sync_dist=True)
+        self.log(f"{stage}_pred_mean", pred.mean(), prog_bar=False)
+        self.log(f"{stage}_pred_std", pred.std(), prog_bar=False)
+        self.log(f"{stage}_target_mean", y_raw.mean(), prog_bar=False)
+        self.log(f"{stage}_target_std", y_raw.std(), prog_bar=False)
+        self.log(f"{stage}_mse", F.mse_loss(pred, y_raw), prog_bar=False)
+        self.log(f"{stage}_mae", F.l1_loss(pred, y_raw), prog_bar=False)
+        
+        # Print progress every 100 steps since progress bar is disabled
+        if self.global_step % 100 == 0:
+            print(f"Step {self.global_step}: {stage}_loss={loss.item():.4f}, {stage}_ic={ic.item():.4f}")
+        
         return loss
 
     # ---------------- Lightning hooks -------------------------------------
@@ -104,7 +121,7 @@ class Lit(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         X, _ = batch
-        return torch.sigmoid(self.net(X)).cpu().numpy() 
+        return self.net(X).cpu().numpy()  # skip sigmoid; keep raw return predictions
     
     def on_save_checkpoint(self, checkpoint):
         """Save scalers in the checkpoint."""

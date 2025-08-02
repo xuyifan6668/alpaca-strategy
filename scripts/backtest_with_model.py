@@ -1,10 +1,8 @@
 import pathlib
-import sys
 import os
-from multiprocessing import Pool, cpu_count
-from functools import partial
+import sys
 
-# Add project root to Python path
+# Add the project root to Python path so we can import alpaca_strategy
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
@@ -12,10 +10,10 @@ import backtrader as bt
 import pandas as pd
 import torch
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 import quantstats as qs
-from model.lit_module import Lit
-from utils.config import ALL_COLS, cfg, tickers
+from alpaca_strategy.model.lit_module import Lit
+from alpaca_strategy.config import get_config
+cfg = get_config()
 
 CHECKPOINT_PATH = "results/micro-graph-v2/rb2pidc4/checkpoints/epoch-epoch=0.ckpt"
 
@@ -69,7 +67,7 @@ class ModelWrapper:
     # ------------------------------------------------------------------
     @staticmethod
     def _ensure_cols(df: pd.DataFrame) -> pd.DataFrame:
-        for c in ALL_COLS:
+        for c in cfg.ALL_COLS:
             if c not in df.columns:
                 df[c] = 0.0
         return df
@@ -90,7 +88,7 @@ class ModelWrapper:
         if symbol not in self.scalers:
             raise RuntimeError(f"Scaler for symbol '{symbol}' not found in checkpoint. Available symbols: {list(self.scalers.keys())}")
         scaler = self.scalers[symbol]
-        feat_scaled = scaler.transform(df[ALL_COLS].values)
+        feat_scaled = scaler.transform(df[cfg.ALL_COLS].values)
 
         return feat_scaled.astype(np.float32)  # (T, FEAT_DIM)
 
@@ -349,7 +347,7 @@ class TopKStrategy(bt.Strategy):
 def load_single_parquet(file_path: pathlib.Path) -> tuple[str, pd.DataFrame]:
     """Load a single parquet file and return (symbol, dataframe)"""
     sym = file_path.stem.split("_")[0]
-    if sym not in tickers:
+    if sym not in cfg.tickers:
         return None
 
     try:
@@ -372,7 +370,7 @@ def load_single_parquet(file_path: pathlib.Path) -> tuple[str, pd.DataFrame]:
 def load_all_parquet_feeds(data_dir: str = "data") -> list[bt.feeds.PandasData]:
 
     raw: dict[str, pd.DataFrame] = {}
-    for ticker in tickers:
+    for ticker in cfg.tickers:
         file_path = pathlib.Path(data_dir) / f"{ticker}_1min.parquet"
         if not file_path.exists():
             print(f"Warning: {file_path} not found")

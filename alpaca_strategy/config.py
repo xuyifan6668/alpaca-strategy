@@ -1,13 +1,14 @@
-from dataclasses import dataclass
-
-
+from dataclasses import dataclass, field, replace
 from typing import Protocol, Iterable, List
 # ────────────────────────────────────────────────────────────────────────────
 # Project-wide configuration and constants
 # ────────────────────────────────────────────────────────────────────────────
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
+    """
+    Central project configuration. ALL_COLS and tickers are now part of the config object.
+    """
     # Data
     data_dir: str = "data"
     seq_len: int = 240      # look-back length doubled to 2 hours
@@ -27,49 +28,58 @@ class Config:
     test_ratio: float = 0.2
 
     # System
-    num_workers: int = 6  # Windows-compatible multiprocessing (2-4 workers max)
-    log_wandb: bool = True
+    num_workers: int = 4  # Windows-compatible multiprocessing (2-4 workers max)
+    log_tensorboard: bool = True
 
     # Universe size (update if list changes below)
     num_stocks: int = 30
+    checkpoint_path: str = "results/model.ckpt"
+    results_dir: str = "results"
+    # Universe
+    tickers: List[str] = field(default_factory=lambda: [
+        "TSLA", "RIVN", "F", "GM",
+        "NVDA", "AMD", "META", "CRM", "INTC", "GOOGL", "MSFT", "AAPL", "NFLX",
+        "PYPL", 
+        "MPC", "DVN", "OXY", "APA", "HAL",
+        "REGN", "VRTX", "BIIB", "LLY", "MRNA",
+        "ROST", "BBWI", "TPR", "ULTA", "ETSY"
+    ])
+    # Feature columns
+    BASE_COLS: List[str] = field(default_factory=lambda: [
+        "open", "high", "low", "close", "volume", "trade_count", "vwap", "mean", "std",
+        "dollar_volume",
+        "cond_is_regular", "odd_lot_count",
+        "cnt_tiny", "cnt_small", "cnt_mid", "cnt_large",
+        "buy_volume", "sell_volume", "order_flow_imbalance",
+        "buy_trade_count", "sell_trade_count",
+        "avg_trade_size", "trade_size_std", "max_trade_size",
+        "intertrade_ms_mean",
+        "order_flow_ratio", "buy_sell_ratio", "volatility_proxy",
+    ])
+    TIME_COLS: List[str] = field(default_factory=lambda: ["minute_norm"])
+    @property
+    def ALL_COLS(self):
+        return self.BASE_COLS + self.TIME_COLS
+    @property
+    def FEAT_DIM(self):
+        return len(self.ALL_COLS)
+    @property
+    def MINUTE_IDX(self):
+        return self.ALL_COLS.index("minute_norm")
+    @property
+    def VOLUME_IDX(self):
+        return self.ALL_COLS.index("volume")
+    @property
+    def STD_IDX(self):
+        return self.ALL_COLS.index("std")
 
 
-cfg = Config()
+def get_config(**overrides) -> Config:
+    """Return a Config object, optionally with overrides."""
+    cfg = Config()
+    return replace(cfg, **overrides) if overrides else cfg
 
-# ---------------------------------------------------------------------------
-# Feature definitions (aligned with data_utils.trades_to_min outputs)
-# ---------------------------------------------------------------------------
-BASE_COLS = [
-    # Core OHLC & volume
-    "open", "high", "low", "close", "volume", "trade_count", "vwap", "mean", "std",
-    "dollar_volume",
-
-    # Trade classifications / counts
-    "cond_is_regular", "odd_lot_count",
-    "cnt_tiny", "cnt_small", "cnt_mid", "cnt_large",
-    "buy_volume", "sell_volume", "order_flow_imbalance",
-    "buy_trade_count", "sell_trade_count",
-
-    # Trade size statistics
-    "avg_trade_size", "trade_size_std", "max_trade_size",
-
-    # Time & micro-structure metrics
-    "intertrade_ms_mean",
-
-    # Ratio / derived measures
-    "order_flow_ratio", "buy_sell_ratio", "volatility_proxy",
-]
-TIME_COLS = ["minute_norm"]
-
-ALL_COLS = BASE_COLS + TIME_COLS
-FEAT_DIM = len(ALL_COLS)
-MINUTE_IDX = ALL_COLS.index("minute_norm")
-
-# ---------------------------------------------------------------------------
-# Default stock universe – 30 highly-volatile yet liquid U.S. equities
-# ---------------------------------------------------------------------------
-
-
+# --- Universe class remains for compatibility, but not required for config ---
 class StockUniverse(Protocol):
     """Minimal interface any stock universe implementation should satisfy."""
 
@@ -103,14 +113,4 @@ class StaticUniverse:
         return f"StaticUniverse({len(self)} symbols)"
 
 
-tickers = [
- "TSLA", "RIVN", "F", "GM",
-    "NVDA", "AMD", "META", "CRM", "INTC", "GOOGL", "MSFT", "AAPL","NFLX",
-    "PYPL", "SQ",
-    "MPC", "DVN", "OXY", "APA", "HAL",
-    "REGN", "VRTX", "BIIB", "LLY", "MRNA",
-    "ROST", "BBWI", "TPR", "ULTA", "ETSY"
-]
-
-
-DEFAULT_UNIVERSE = StaticUniverse(tickers) 
+DEFAULT_UNIVERSE = StaticUniverse(get_config().tickers) 

@@ -1,6 +1,46 @@
-# ML Trading Strategy
+# Alpaca Strategy
 
-A machine learning-based trading system that uses real-time market data to make automated trading decisions.
+A machine learning-based trading strategy using PyTorch Lightning and Alpaca Markets API.
+
+## Features
+
+- Multi-stock time series prediction using transformer architecture
+- Real-time trading with Alpaca Markets API
+- Comprehensive backtesting framework
+- Log return and top-k binary classification label generation
+- **TensorBoard logging for training visualization**
+
+## Training
+
+To train the model:
+
+```bash
+python scripts/train.py
+```
+
+The model will be saved in the `results/` directory with checkpoints.
+
+## TensorBoard Logging
+
+Training logs are automatically saved to `results/tensorboard_logs/`. To view the training progress:
+
+```bash
+tensorboard --logdir results/tensorboard_logs
+```
+
+Then open your browser to `http://localhost:6006` to view:
+- Training and validation loss curves
+- Learning rate schedules
+- Model graphs
+- Other training metrics
+
+## Configuration
+
+Edit `alpaca_strategy/config.py` to modify:
+- Model hyperparameters
+- Data settings
+- Training parameters
+- Logging options
 
 ## Overview
 
