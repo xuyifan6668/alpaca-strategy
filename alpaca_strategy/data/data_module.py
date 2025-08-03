@@ -155,7 +155,7 @@ class AllSymbolsDataModule(pl.LightningDataModule):
                           persistent_workers=True if cfg.num_workers > 0 else False)
 
     def train_dataloader(self):
-        return self._dl(self.train_ds, True)
+        return self._dl(self.train_ds, False)
 
     def val_dataloader(self):
         return self._dl(self.val_ds, False)

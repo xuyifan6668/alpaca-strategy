@@ -9,7 +9,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import os
-
+import multiprocessing as mp
 # Add the project root to Python path so we can import alpaca_strategy
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -22,6 +22,9 @@ cfg = get_config()
 from alpaca_strategy.data.data_module import AllSymbolsDataModule
 from alpaca_strategy.callbacks import default_callbacks
 from alpaca_strategy.model.lit_module import Lit
+
+
+
 
 
 
@@ -59,7 +62,7 @@ def main():
             gradient_clip_val=1.0,
             logger=logger,
             log_every_n_steps=50,
-            enable_progress_bar=False,
+            enable_progress_bar=True,
             enable_model_summary=True,
         )
         trainer.fit(model, dm)
@@ -72,8 +75,8 @@ def main():
         model = Lit.load_from_checkpoint(str(ckpt_path))
         trainer = pl.Trainer(accelerator="gpu" if torch.cuda.is_available() else "cpu",
                              devices=torch.cuda.device_count() or 1,
-                             enable_progress_bar=False,
-                             enable_model_summary=False)
+                             enable_progress_bar=True,
+                             enable_model_summary=True)
         import numpy as np
         raw_preds = trainer.predict(model, dm.test_dataloader())
         if raw_preds is None:
@@ -84,4 +87,5 @@ def main():
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)   
     main() 

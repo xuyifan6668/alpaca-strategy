@@ -36,7 +36,7 @@ SYMBOLS: List[str] = cfg.tickers
 SEQ_LEN = cfg.seq_len
 CHECKPOINT_PATH = "results/micro-graph-v2/rb2pidc4/checkpoints/epoch-epoch=0.ckpt"
 TOP_K = 3
-MIN_PROB = 0.01
+MIN_PRED = 0.01  # Minimum prediction threshold
 HOLD_MINUTES = 10
 COOLDOWN_MINUTES = 10  # Wait 15 minutes before re-buying a liquidated stock
 LIQUIDATE_MINUTES_BEFORE_CLOSE = 2
@@ -168,13 +168,13 @@ def check_and_trade():
         win = {s: build_window_df(s) for s in SYMBOLS}
         preds = model.predict_batch(win)
         for s, info in preds.items():
-            PROB_HIST[s].append(info["prob"])
+            PROB_HIST[s].append(info["pred"])
         smooth_len=min(PROB_WINDOW, len(PROB_HIST[s]))
         smoothed: Dict[str, float] = {
             s: sum(dq) / smooth_len for s, dq in PROB_HIST.items() if len(dq) == smooth_len
         }
         ranked = sorted(
-            ((s, p) for s, p in smoothed.items() if p >= MIN_PROB),
+            ((s, p) for s, p in smoothed.items() if p >= MIN_PRED),
             key=lambda kv: kv[1],
             reverse=True,
         )
@@ -198,7 +198,7 @@ def check_and_trade():
         for s in candidates:
             closes = [row["close"] for row in BAR_BUFFERS[s]][-15:]
             timing = timing_good(closes)
-            print(f"{s}: smoothed_prob={smoothed[s]:.3f}") 
+            print(f"{s}: smoothed_pred={smoothed[s]:.6f}") 
 
         run_async_orders(smart_position_management(
             candidates=candidates,

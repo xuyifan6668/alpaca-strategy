@@ -7,8 +7,7 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import OneCycleLR
 import pytorch_lightning as pl
 
-from alpaca_strategy.utils_ranking import spearman_loss
-from alpaca_strategy.metrics import compute_metrics
+
 from alpaca_strategy.model.models_encoder import Encoder
 from alpaca_strategy.config import get_config
 cfg = get_config()
@@ -16,102 +15,160 @@ cfg = get_config()
 # ---------------------------------------------------------------------------
 # LightningModule
 # ---------------------------------------------------------------------------
+"""PyTorch-Lightning module wrapping the Encoder and training logic (simplified)."""
+
+
 
 class Lit(pl.LightningModule):
-    def __init__(self, *, encoder: Encoder | None = None, cfg=cfg, base_lr: float = 5e-4, scalers=None):
-        """Lightning module wrapping an **Encoder**.
+    def __init__(
+        self,
+        *,
+        encoder: Encoder | None = None,
+        cfg=cfg,
+        base_lr: float = 1e-4,  # Reduced from 5e-4
+        scalers=None,
+        tau_start: float = 0.6,
+        tau_end: float = 0.1,
+        div_weight: float = 0.01,
+    ):
+        """
+        Minimal LightningModule for cross-sectional rank training.
 
-        Parameters
-        ----------
-        encoder : Encoder, optional
-            If supplied we will use this instance directly.  Otherwise a new
-            `Encoder(cfg=cfg)` is created.
-        cfg : Config, optional
-            Configuration to pass to the encoder and for any training logic.
-            Defaults to the project-wide global.
-        base_lr : float, default 1e-3
-            Base learning rate for the AdamW optimiser.
-        scalers : dict, optional
-            Dictionary of scalers for each symbol. Will be saved with the model.
+        - Loss: Spearman (soft ranks) + tiny diversity
+        - No magnitude calibration (rank-only strategy)
         """
         super().__init__()
-
         self.cfg = cfg
         self.base_lr = base_lr
+        self.net = encoder if encoder is not None else Encoder(cfg=cfg)
+
+        # training knobs
+        self.tau_start = float(tau_start)
+        self.tau_end = float(tau_end)
+        self.div_weight = float(div_weight)
+
+        # optional: stash scalers into checkpoint for inference
         self.scalers = scalers
 
-        # Save only primitive hyper-parameters so checkpoints stay lightweight
-        self.save_hyperparameters({"base_lr": base_lr})
+        # keep checkpoints lightweight
+        self.save_hyperparameters({"base_lr": base_lr, "tau_start": tau_start, "tau_end": tau_end, "div_weight": div_weight})
 
-        self.net = encoder if encoder is not None else Encoder(cfg=cfg)
-        
-        # Store scalers for checkpoint saving
-        if scalers is not None:
-            self._scalers = scalers  # Store actual scalers
+        # internal
+        self._est_total_steps = None  # filled on fit start
 
-    # ----------------- Forward Method for Model Summary ------------------------------
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass for model summary and inference."""
-        return self.net(x)
-
-    # ----------------- Optimiser & Scheduler ------------------------------
+    # ----------------- Optimizer & LR schedule ------------------------------
     def configure_optimizers(self):
-        # AdamW optimiser followed by One-Cycle learning-rate policy
         opt = torch.optim.AdamW(self.parameters(), lr=self.base_lr)
+        # OneCycle needs total steps; we set it exactly in on_fit_start.
+        total_steps = int(getattr(self.trainer, "estimated_stepping_batches", 0) or 1)
+        self._est_total_steps = total_steps
 
-
-        total_steps = int(self.trainer.estimated_stepping_batches)  # type: ignore[attr-defined]
-
-        scheduler = OneCycleLR(
+        sch = OneCycleLR(
             opt,
-            max_lr=self.base_lr * 3,  # peak LR = 3× base
+            max_lr=self.base_lr * 2,  # Reduced from 3x to 2x
             total_steps=total_steps,
-            pct_start=0.1,  # ramp up for 10% of steps
+            pct_start=0.1,
             anneal_strategy="cos",
-            final_div_factor=100,  # final LR = 1.5e-5
+            final_div_factor=100,
         )
+        return {"optimizer": opt, "lr_scheduler": {"scheduler": sch, "interval": "step"}}
 
-        return {
-            "optimizer": opt,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step", 
-            },
-        }
+    # ----------------- Utilities ------------------------------
+    @staticmethod
+    def rowwise_z(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        m = x.mean(dim=1, keepdim=True)
+        s = x.std(dim=1, keepdim=True)
+        return (x - m) / (s + eps)
 
-    # ----------------------- shared step ----------------------------------
+    @staticmethod
+    def soft_rank(x: torch.Tensor, tau: float = 0.1) -> torch.Tensor:
+        """Differentiable soft ranks; O(S^2). x: [B,S] -> [B,S] in ~[1..S]."""
+        x_i = x.unsqueeze(-1)                         # [B,S,1]
+        x_j = x.unsqueeze(-2)                         # [B,1,S]
+        P = torch.sigmoid((x_j - x_i) / tau)          # P[j < i]
+        return 1.0 + P.sum(dim=-1)                    # expected rank
+
+    @staticmethod
+    def hard_rank(y: torch.Tensor) -> torch.Tensor:
+        """Non-diff ranks for targets. y: [B,S] -> [B,S] in 1..S."""
+        return y.argsort(dim=1).argsort(dim=1).float() + 1.0
+
+    def _spearman_loss(self, pred: torch.Tensor, target: torch.Tensor, tau: float) -> torch.Tensor:
+        """Rowwise (per-bar) Spearman via Pearson(soft_rank(pred), rank(target))."""
+        # skip degenerate rows
+        valid = target.std(dim=1) > 1e-6
+        if not valid.any():
+            # return a tiny 0-like tensor that still backprops
+            return pred.sum() * 0.0
+
+        pred = pred[valid]
+        target = target[valid]
+
+        sr = self.soft_rank(pred, tau=tau)           # [B',S]
+        r  = self.hard_rank(target)                  # [B',S]
+
+        pz, yz = self.rowwise_z(sr), self.rowwise_z(r)
+        corr = (pz * yz).mean(dim=1).mean()          # mean over bars
+        return -corr                                  # maximize correlation
+
+    # ----------------- Shared step ------------------------------
     def _step(self, batch, stage: str):
-        X, y_raw = batch                    # y_raw: [B, S] future returns
-        pred = self.net(X)                 # logits → predicted returns
+        X, y = batch                                  # X: [B,S,T,D], y: [B,S]
+        pred = self.net(X)                            # [B,S]; bar-centered by encoder
 
-        loss = F.mse_loss(pred, y_raw)
+        # tau anneal by *training progress* (step-based)
+        if self._est_total_steps is None or self._est_total_steps <= 1:
+            progress = 0.0
+        else:
+            progress = min(1.0, float(self.global_step) / float(self._est_total_steps - 1))
+        tau = self.tau_start + (self.tau_end - self.tau_start) * progress
 
-        # Optional IC logging (correlation between predicted and actual returns)
-        ic_vals = []
-        for i in range(y_raw.size(0)):
-            if y_raw[i].std() > 1e-8:
-                ic_vals.append(torch.corrcoef(torch.stack([pred[i], y_raw[i]]))[0, 1])
-        ic = torch.stack(ic_vals).mean() if ic_vals else torch.tensor(0.0, device=self.device)
+        # losses
+        corr_loss = self._spearman_loss(pred, y, tau=tau)
+        diversity = torch.exp(-pred.std(dim=1).mean().clamp_min(1e-8))
+        loss = corr_loss + self.div_weight * diversity
 
-        # Enhanced logging with more metrics
-        self.log(f"{stage}_loss", loss, prog_bar=False, sync_dist=True)
-        self.log(f"{stage}_ic", ic, prog_bar=False, sync_dist=True)
-        self.log(f"{stage}_pred_mean", pred.mean(), prog_bar=False)
-        self.log(f"{stage}_pred_std", pred.std(), prog_bar=False)
-        self.log(f"{stage}_target_mean", y_raw.mean(), prog_bar=False)
-        self.log(f"{stage}_target_std", y_raw.std(), prog_bar=False)
-        self.log(f"{stage}_mse", F.mse_loss(pred, y_raw), prog_bar=False)
-        self.log(f"{stage}_mae", F.l1_loss(pred, y_raw), prog_bar=False)
+        bs = X.size(0)
+        show_bar = stage in ("train", "val")
+        on_step = stage == "train"  # step-wise for train only
+        on_epoch = True
+
+        self.log(f"{stage}_loss", loss, on_step=on_step, on_epoch=on_epoch, prog_bar=show_bar, batch_size=bs)
+        self.log(f"{stage}_corr_loss", corr_loss, on_step=on_step, on_epoch=on_epoch, prog_bar=False, batch_size=bs)
+        self.log(f"{stage}_diversity", diversity, on_step=on_step, on_epoch=on_epoch, prog_bar=False, batch_size=bs)
+        self.log(f"{stage}_tau", tau, on_step=on_step, on_epoch=on_epoch, prog_bar=show_bar, batch_size=bs)
+
+        # cross-sectional monitors
+        with torch.no_grad():
+            valid = y.std(dim=1) > 1e-6
+            if valid.any():
+                sr = self.soft_rank(pred[valid], tau=self.tau_end)  # fixed tau for monitor
+                r = self.hard_rank(y[valid])
+                cs_ic = (self.rowwise_z(sr) * self.rowwise_z(r)).mean(dim=1).mean()
+                cs_pred_std = pred[valid].std(dim=1).mean()
+                self.log(f"{stage}_cs_ic", cs_ic, on_step=on_step, on_epoch=on_epoch, prog_bar=show_bar, batch_size=bs)
+                self.log(f"{stage}_cs_pred_std", cs_pred_std, on_step=on_step, on_epoch=on_epoch, prog_bar=False, batch_size=bs)
+
+        return loss
+    # ----------------- Lightning hooks ------------------------------
+    def training_step(self, batch, batch_idx):
+        loss = self._step(batch, "train")
         
-        # Print progress every 100 steps since progress bar is disabled
+        # Monitor gradients
         if self.global_step % 100 == 0:
-            print(f"Step {self.global_step}: {stage}_loss={loss.item():.4f}, {stage}_ic={ic.item():.4f}")
+            total_norm = 0.0
+            param_count = 0
+            for p in self.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    param_count += 1
+            
+            if param_count > 0:
+                total_norm = total_norm ** (1. / 2)
+                self.log("train_grad_norm", total_norm)
         
         return loss
-
-    # ---------------- Lightning hooks -------------------------------------
-    def training_step(self, batch, batch_idx):
-        return self._step(batch, "train")
 
     def validation_step(self, batch, batch_idx):
         self._step(batch, "val")
@@ -121,23 +178,18 @@ class Lit(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         X, _ = batch
-        return self.net(X).cpu().numpy()  # skip sigmoid; keep raw return predictions
-    
+        pred = self.net(X)
+        return pred.detach().cpu().numpy()
+
+    # ----------------- Checkpoint I/O for scalers ------------------------------
     def on_save_checkpoint(self, checkpoint):
-        """Save scalers in the checkpoint."""
-        if hasattr(self, '_scalers') and self._scalers is not None:
-            checkpoint['scalers'] = self._scalers
-            print(f"Saved {len(self._scalers)} scalers in checkpoint")
-    
+        if self.scalers is not None:
+            checkpoint["scalers"] = self.scalers
+
     def on_load_checkpoint(self, checkpoint):
-        """Load scalers from the checkpoint."""
-        if 'scalers' in checkpoint:
-            self._scalers = checkpoint['scalers']
-            self.scalers = self._scalers  # For backward compatibility
-            print(f"Loaded {len(self._scalers)} scalers from checkpoint")
-        else:
-            print("No scalers found in checkpoint")
-    
+        if "scalers" in checkpoint:
+            self.scalers = checkpoint["scalers"]
+
     @property
     def scalers(self):
         """Property to access scalers."""

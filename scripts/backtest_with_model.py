@@ -25,35 +25,32 @@ class ModelWrapper:
     """
 
     def __init__(self, checkpoint_path: str, device: str = "cpu") -> None:
-        self.device = torch.device(device)
+        self.device = device
+        self.checkpoint_path = checkpoint_path
 
-        # Try to load as integrated PyTorch Lightning model first
+        # Load checkpoint
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        
+        # Try loading as Lightning module first
         try:
             lit = Lit.load_from_checkpoint(checkpoint_path, map_location=self.device)
             self.model = lit.net
             self.scalers = lit.scalers
             print(f"Loaded integrated model with {len(self.scalers) if self.scalers else 0} scalers")
         except Exception as e:
-            print(f"Could not load as integrated model: {e}")
-            # Fallback to manual loading
-            ckpt = torch.load(checkpoint_path, map_location=self.device)
-
-            if isinstance(ckpt, dict) and "state_dict" in ckpt:
-                lit = Lit()
-                lit.load_state_dict(ckpt["state_dict"], strict=False)
-                self.model = lit.net
+            print(f"Failed to load as Lightning module: {e}")
+            # Fallback: load raw state dict
+            if "state_dict" in ckpt:
+                from alpaca_strategy.model.models_encoder import Encoder
+                self.model = Encoder(cfg=cfg)
+                self.model.load_state_dict(ckpt["state_dict"])
                 self.scalers = ckpt.get("scalers", None)
-            elif hasattr(ckpt, "net"):
-                self.model = ckpt.net
-                self.scalers = getattr(ckpt, "scalers", None)
+                print(f"Loaded raw state dict with {len(self.scalers) if self.scalers else 0} scalers")
             else:
-                raise RuntimeError("Unsupported checkpoint format; expected dict with 'state_dict' or object with .net")
+                raise ValueError("Checkpoint format not recognized")
 
-        if self.scalers is None:
-            raise RuntimeError("No scalers found in checkpoint. Please retrain and save with scalers.")
-
+        self.model.to(device)
         self.model.eval()
-        self.model.to(self.device)
 
     def _add_minute_norm(self, df: pd.DataFrame) -> pd.DataFrame:
         if "minute_norm" not in df.columns and "timestamp" in df.columns:
@@ -103,7 +100,7 @@ class ModelWrapper:
         Returns
         -------
         dict[str, dict]
-            Symbol → {"prob": float}
+            Symbol → {"pred": float}
         """
         order = list(win_dict.keys())
         feats = [self._prepare_window(win_dict[sym], sym) for sym in order]
@@ -112,12 +109,13 @@ class ModelWrapper:
 
         with torch.no_grad():
             logits = self.model(x)
-            probs = torch.sigmoid(logits[0]).cpu().numpy()  # (S,)
+            pred = logits[0]  # Model outputs cross-sectionally standardized predictions
+            probs = pred.cpu().numpy()  # (S,)
 
         results = {}
         for i, sym in enumerate(order):
             results[sym] = {
-                "prob": float(probs[i])
+                "pred": float(probs[i]) 
             }
         return results
 
@@ -202,7 +200,7 @@ class TopKStrategy(bt.Strategy):
         """Return top-k symbols by highest probability with timing filter."""
         smoothed = {}
         for sym, info in predictions.items():
-            self.prob_hist[sym].append(info["prob"])
+            self.prob_hist[sym].append(info["pred"])
             if len(self.prob_hist[sym]) == self.params.prob_window:
                 smoothed[sym] = sum(self.prob_hist[sym]) / self.params.prob_window
 
@@ -324,8 +322,8 @@ class TopKStrategy(bt.Strategy):
                         self.position_entry_times[sym] = bar_idx
 
                         if self.params.print_trades:
-                            prob = preds[sym]["prob"]
-                            print(f"BUY {sym}: {target_qty} shares @ ${current_price:.2f} | Prob: {prob:.3f} | Target: ${target_per_position:.0f}")
+                            pred = preds[sym]["pred"]
+                            print(f"BUY {sym}: {target_qty} shares @ ${current_price:.2f} | Pred: {pred:.6f} | Target: ${target_per_position:.0f}")
 
                     elif target_qty > current_qty:
                         # Increase position
