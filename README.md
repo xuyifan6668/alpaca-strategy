@@ -100,10 +100,17 @@ run_async_orders(smart_position_management(
 
 1. **Every 10 minutes**: Check if new data is available
 2. **ML Prediction**: Get probability scores for all 30+ stocks
-3. **Rank Selection**: Select top 3 stocks by prediction score
+3. **Rank Selection**: Select top 6 stocks by prediction score
 4. **Technical Filter**: Apply moving average, momentum, and RSI filters
-5. **Position Management**: Adjust positions to match candidates
+5. **Position Management**: Adjust positions to match candidates (no minimum hold time)
 6. **Order Execution**: Execute market orders via Alpaca API
+
+### Daily Trading Cycle
+
+1. **Market Opens (9:30 AM)**: Load latest model and start trading
+2. **During Trading**: Make decisions every 10 minutes
+3. **Market Closes (4:00 PM)**: Update data and model for next day
+4. **Next Trading Day**: Use updated model for improved predictions
 
 ## Model Architecture
 
@@ -221,9 +228,13 @@ python scripts/trade_realtime_ws.py
 ```
 
 The system will:
-- Load the pre-trained model from `results/updated_model/updated_model_20250806.ckpt`
+- **Automatically find and load the latest model** from any of these directories:
+  - `results/` (main directory)
+  - `results/updated_model/` (updated models)
+  - `results/daily_updates/` (daily updates)
 - Use existing market data from `data/` directory
 - Start real-time trading with the 30+ stocks in the portfolio
+- **Update data and model after market close** for next trading day
 
 ### Complete Setup (If Starting Fresh)
 
@@ -272,13 +283,25 @@ alpaca-trade
 python scripts/trade_realtime_ws.py
 ```
 
+**Trading Session Flow:**
+1. **Market Opens**: System loads latest model and starts trading
+2. **During Trading**: Makes decisions every 10 minutes
+3. **Market Closes**: System updates data and model for next day
+4. **Next Day**: Uses updated model for improved predictions
+
 Monitor live trading:
 - Press `Ctrl+\` for status updates
 - Check `results/logs/` for detailed logs
+- Model updates happen automatically after market close
 
-#### 5. Model Updates (Optional)
+#### 5. Model Updates (Automatic)
 
-Update the model with new data:
+The system automatically updates the model after market close:
+- **Data Update**: Fetches complete data for the trading day
+- **Model Update**: Trains on complete data for better predictions
+- **Next Day**: Uses updated model for improved performance
+
+Manual updates (if needed):
 ```bash
 alpaca-update-model
 # or
@@ -353,11 +376,13 @@ alpaca-strategy/
 ### Built-in Safety Features
 
 - **Paper Trading**: Default mode for testing
-- **Position Limits**: Maximum 3 concurrent positions
+- **Position Limits**: Maximum 6 concurrent positions
 - **Exposure Control**: Maximum $50,000 total portfolio exposure
 - **Decision Interval**: 10-minute trading decision frequency
+- **No Minimum Hold Time**: Positions can be liquidated immediately
 - **Adjustment Threshold**: Only adjust positions if difference > $500
 - **Technical Filters**: Moving averages, momentum, and RSI validation
+- **Automatic Model Updates**: After market close for improved predictions
 
 ### Risk Monitoring
 
@@ -380,12 +405,14 @@ alpaca-strategy/
 - **Position Tracking**: Current positions and P&L
 - **Trade Logs**: Detailed trade history
 - **Risk Metrics**: Drawdown, Sharpe ratio, win rate
+- **Model Status**: Current model version and update status
 
 ### System Monitoring
 - **Stream Health**: Data feed status and latency
 - **API Usage**: Alpaca API rate limits and errors
 - **Memory Usage**: System resource monitoring
 - **Error Logs**: Exception handling and recovery
+- **Model Management**: Automatic model loading and update detection
 
 ## Troubleshooting
 
@@ -410,6 +437,13 @@ alpaca-strategy/
    python -c "import pandas as pd; pd.read_parquet('data/AAPL_1min.parquet')"
    ```
 
+5. **Model Loading Issues:**
+   ```bash
+   ls results/
+   ls results/updated_model/
+   ls results/daily_updates/
+   ```
+
 ### Development Setup
 
 For development work:
@@ -430,6 +464,12 @@ The system defaults to paper trading mode. Only switch to live trading after tho
 
 ### API Limits
 Alpaca API has rate limits. The system includes built-in rate limiting and error handling, but monitor usage to avoid hitting limits.
+
+### Model Management
+- The system automatically finds and loads the latest model
+- Models are updated after market close for better predictions
+- No manual model management required
+- System searches multiple directories for model files
 
 ## Support
 

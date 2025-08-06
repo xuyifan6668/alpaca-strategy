@@ -39,7 +39,7 @@ model = None
 
 # Model update configuration flags
 PAPER = True  # Use paper trading (not real money)
-UPDATE_MODEL_BEFORE_TRADING = True  # Update model before each trading session
+UPDATE_MODEL_AFTER_CLOSE = True  # Update model after market close
 UPDATE_MODEL_DURING_TRADING = False  # Update model during trading (not recommended)
 LAST_MODEL_UPDATE_DATE = None  # Track when model was last updated
 
@@ -90,15 +90,42 @@ def load_latest_model():
     global model, CHECKPOINT_PATH
     
     try:
-        # Look for the most recent checkpoint in the results directory
-        results_dir = pathlib.Path("results")
-        checkpoint_files = list(results_dir.rglob("*.ckpt"))
+        # Look for model checkpoints in multiple directories
+        search_dirs = [
+            pathlib.Path("results"),
+            pathlib.Path("results/updated_model"),
+            pathlib.Path("results/daily_updates")
+        ]
+        
+        checkpoint_files = []
+        for search_dir in search_dirs:
+            if search_dir.exists():
+                checkpoint_files.extend(list(search_dir.rglob("*.ckpt")))
         
         if checkpoint_files:
-            # Sort by modification time and get the most recent
-            latest_checkpoint = max(checkpoint_files, key=lambda x: x.stat().st_mtime)
-            CHECKPOINT_PATH = str(latest_checkpoint)
-            print(f"Loading latest model: {CHECKPOINT_PATH}")
+            # Find the model with the latest date in filename
+            latest_date = None
+            latest_checkpoint = None
+            
+            for checkpoint in checkpoint_files:
+                filename = checkpoint.name
+                if "updated_model_" in filename:
+                    try:
+                        date_str = filename.split("updated_model_")[1].split(".ckpt")[0]
+                        model_date = datetime.strptime(date_str, "%Y%m%d").date()
+                        if latest_date is None or model_date > latest_date:
+                            latest_date = model_date
+                            latest_checkpoint = checkpoint
+                    except:
+                        continue
+            
+            # If no dated model found, use the most recent by modification time
+            if latest_checkpoint is None:
+                latest_checkpoint = max(checkpoint_files, key=lambda x: x.stat().st_mtime)
+                print(f"Loading latest model (no date in filename): {latest_checkpoint}")
+            else:
+                CHECKPOINT_PATH = str(latest_checkpoint)
+                print(f"Loading latest model from {latest_date}: {CHECKPOINT_PATH}")
         else:
             print(f"No checkpoint found, using default: {CHECKPOINT_PATH}")
         
@@ -111,13 +138,14 @@ def load_latest_model():
         return False
 
 
-def update_model_with_previous_day():
+def update_model():
     """Update model with the previous trading day's data for incremental learning."""
     global CHECKPOINT_PATH
     
     try:
-        # Use current date as target (model will use last 5 days of data)
-        target_date = datetime.now().date().strftime("%Y-%m-%d")
+        # Use previous trading day as target (model will use last 5 days of data)
+        previous_trading_day = get_previous_trading_day()
+        target_date = previous_trading_day.strftime("%Y-%m-%d")
         print(f"Updating model with last 5 days data until {target_date}")
         
         # Update the model with previous day's data
@@ -142,20 +170,56 @@ def update_model_with_previous_day():
 
 
 def should_update_model():
-    """Check if model should be updated based on last update date."""
+    """Check if model should be updated based on latest model date."""
     global LAST_MODEL_UPDATE_DATE
     
-    if not UPDATE_MODEL_BEFORE_TRADING:
+    if not UPDATE_MODEL_AFTER_CLOSE:
         return False
     
     today = datetime.now().date()
     
-    # Update if never updated before or if it's a new trading day
-    if LAST_MODEL_UPDATE_DATE is None or LAST_MODEL_UPDATE_DATE != today:
-        LAST_MODEL_UPDATE_DATE = today
+    # Look for the latest model with a date in filename
+    search_dirs = [
+        pathlib.Path("results"),
+        pathlib.Path("results/updated_model"),
+        pathlib.Path("results/daily_updates")
+    ]
+    
+    checkpoint_files = []
+    for search_dir in search_dirs:
+        if search_dir.exists():
+            checkpoint_files.extend(list(search_dir.rglob("*.ckpt")))
+    
+    if not checkpoint_files:
+        print("No model found - update needed")
         return True
     
-    return False
+    # Find the model with the latest date
+    latest_date = None
+    for checkpoint in checkpoint_files:
+        filename = checkpoint.name
+        if "updated_model_" in filename:
+            try:
+                date_str = filename.split("updated_model_")[1].split(".ckpt")[0]
+                model_date = datetime.strptime(date_str, "%Y%m%d").date()
+                if latest_date is None or model_date > latest_date:
+                    latest_date = model_date
+            except:
+                continue
+    
+    if latest_date is None:
+        print("No dated model found - update needed")
+        return True
+    
+    print(f"Latest model date: {latest_date}, Today: {today}")
+    
+    # Update if latest model is not from today
+    if latest_date < today:
+        print("Model is from yesterday - update needed")
+        return True
+    else:
+        print("Model is from today - no update needed")
+        return False
 
 
 def get_previous_trading_day() -> datetime:
@@ -569,27 +633,12 @@ def main():
         # Now in a valid trading session window
         log("Market open and not near close. Starting trading session.")
         
-        # Update data first
-        process_symbols(cfg.tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
-        log("Historical data updated.")
-        
-        # Update model with previous day's data if needed
-        if should_update_model():
-            log("Updating model with previous day's data...")
-            model_updated = update_model_with_previous_day()
-            if model_updated:
-                log("Model updated successfully.")
-            else:
-                log("Model update failed or skipped.")
-        else:
-            log("Model update not needed for today.")
-        
-        # Load the latest model (either updated or existing)
+        # Load the latest model for trading
         model_loaded = load_latest_model()
         if not model_loaded:
             log("Warning: Model loading failed. Will attempt to continue with existing model.")
         else:
-            log("Latest model loaded.")
+            log("Latest model loaded successfully.")
         
         # Liquidate positions and start trading
         liquidate_all_positions(trading_client)
@@ -601,10 +650,30 @@ def main():
         # Run trading session
         try:
             run_market_data_stream()
-            log("Trading session ended. Will wait for next open.")
+            log("Trading session ended.")
         except Exception as e:
             log(f"Trading session error: {e}")
             log("Will attempt to restart in next cycle.")
+            continue
+        
+        wait_until(market_close + timedelta(minutes=10))
+        # After market close: Update data and model
+        log("Market closed. Updating data and model...")
+        
+        # Update data with today's complete data
+        process_symbols(cfg.tickers, start_dt=datetime(2025, 1, 2), end_dt=None, mode='update')
+        log("Historical data updated with today's complete data.")
+        
+        # Update model with today's data if needed
+        if should_update_model():
+            log("Updating model with today's data...")
+            model_updated = update_model()
+            if model_updated:
+                log("Model updated successfully with today's data.")
+            else:
+                log("Model update failed or skipped.")
+        else:
+            log("Model update not needed for today.")
         
         # Wait for market close + buffer before checking next session
         now = nyc_now()
