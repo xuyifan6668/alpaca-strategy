@@ -9,7 +9,7 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca_strategy.env import DEBUG
 import pandas_market_calendars as mcal
 from datetime import timedelta
-from alpaca_strategy.logging_utils import log
+from alpaca_strategy.data.data_utils import log
 import asyncio
 
 
@@ -221,56 +221,26 @@ def get_current_positions(trading_client):
 
 
 async def smart_position_management(candidates, trading_client, target_total_exposure=10000, max_positions=3, 
-                            adjustment_threshold=1000, bar_buffers=None, min_trade_shares=1, 
-                            liquidated_cooldown=None, cooldown_minutes=15, hold_minutes=10, 
-                            position_entry_times=None):
+                            adjustment_threshold=1000, bar_buffers=None):
     """Smart position management: read current positions and adjust dynamically. Synchronous order execution only."""
     
-    if position_entry_times is None:
-        position_entry_times = {}
-    
-    # Assign 'now' at the start to ensure it is always defined before use
-    now = nyc_now()
+
     
     # Get current positions from account
     current_positions, current_total_value = get_current_positions(trading_client)
     
-    # Initialize entry times for existing positions that aren't tracked yet
-    # (happens when restarting the system with existing positions)
-    for symbol in current_positions:
-        if symbol not in position_entry_times:
-            # Assume existing positions were opened "now" to give them a fresh start
-            position_entry_times[symbol] = now
-
-    
     # Calculate target value per position
     target_per_position = target_total_exposure / max_positions
-    
-
     
     # Determine what actions to take
     actions = []
     
-    # 1. Handle existing positions not in candidates (should we liquidate?)
+    # 1. Handle existing positions not in candidates (liquidate immediately)
     for symbol in current_positions:
         if symbol not in candidates:
-            # Check minimum hold time before liquidating
-            if symbol in position_entry_times:
-                entry_time = position_entry_times[symbol]
-                hold_time_minutes = (now - entry_time).total_seconds() / 60
-                
-                if hold_time_minutes < hold_minutes:
-                    continue
             req = MarketOrderRequest(symbol=symbol, qty=current_positions[symbol]['qty'], side=OrderSide.SELL, time_in_force=TimeInForce.DAY)
             actions.append(('sell', symbol, current_positions[symbol]['qty'],
                           f"No longer in top candidates", req))
-            # Add to cooldown when liquidating
-            if liquidated_cooldown is not None:
-                from datetime import timedelta
-                liquidated_cooldown[symbol] = now + timedelta(minutes=cooldown_minutes)
-            # Remove from entry times tracking
-            if symbol in position_entry_times:
-                del position_entry_times[symbol]
     
     # 2. Handle candidates
     for symbol in candidates[:max_positions]:  # Only take up to max_positions
@@ -297,8 +267,6 @@ async def smart_position_management(candidates, trading_client, target_total_exp
                     req = MarketOrderRequest(symbol=symbol, qty=target_qty, side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
                     actions.append(('buy', symbol, target_qty,
                                   f"New position: ${target_per_position:.0f} target", req))
-                    # Track entry time for new positions
-                    position_entry_times[symbol] = now
                 elif target_qty > current_qty:
                     # Increase position
                     qty_to_buy = target_qty - current_qty

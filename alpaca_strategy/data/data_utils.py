@@ -533,3 +533,9 @@ def append_bar_to_parquet(symbol: str, bar: dict, data_dir: str = 'data'):
             print(f"Error creating {file_path}: {e}") 
 
 
+def log(message: str):
+    """
+    Log a message with a timestamp.
+    """
+    from datetime import datetime
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")

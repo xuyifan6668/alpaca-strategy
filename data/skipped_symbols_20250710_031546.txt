@@ -1,5 +1,0 @@
-# Skipped symbols - 20250710_031546
-# Total: 3
-TSLA
-NVDA
-AMD
